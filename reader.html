@@ -40,16 +40,18 @@
         </div>
         <div class="annotation-tools">
           <button id="annotationModeButton" class="annotation-mode-button" type="button">批注模式</button>
-          <button id="eraserModeButton" class="annotation-mode-button annotation-eraser-button" type="button">橡皮擦</button>
-          <label class="annotation-control" for="annotationColor">
-            <span>颜色</span>
-            <input id="annotationColor" type="color" value="#c84c31" />
-          </label>
-          <label class="annotation-control" for="annotationWidth">
-            <span>粗细</span>
-            <input id="annotationWidth" type="range" min="2" max="14" step="1" value="4" />
-          </label>
-          <button id="clearAnnotationsButton" class="annotation-clear-button" type="button">清空</button>
+          <div class="annotation-detail-tools">
+            <button id="eraserModeButton" class="annotation-mode-button annotation-eraser-button" type="button">橡皮擦</button>
+            <label class="annotation-control" for="annotationColor">
+              <span>颜色</span>
+              <input id="annotationColor" type="color" value="#c84c31" />
+            </label>
+            <label class="annotation-control" for="annotationWidth">
+              <span>粗细</span>
+              <input id="annotationWidth" type="range" min="2" max="14" step="1" value="4" />
+            </label>
+            <button id="clearAnnotationsButton" class="annotation-clear-button" type="button">清空</button>
+          </div>
         </div>
       </section>
 
@@ -123,6 +125,14 @@
         <button id="closeDialogButton" class="dialog-close" type="button">关闭</button>
       </div>
       <div id="dialogPreviewHost" class="dialog-preview-host"></div>
+    </div>
+  </dialog>
+
+  <dialog id="annotationHelpDialog" class="annotation-help-dialog">
+    <div class="annotation-help-card">
+      <div class="annotation-help-title">批注模式说明</div>
+      <p class="annotation-help-copy">单指书写批注，双指拖动画布。</p>
+      <button id="annotationHelpConfirmButton" class="annotation-help-button" type="button">知道了</button>
     </div>
   </dialog>
 
