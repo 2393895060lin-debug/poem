@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 GAOKAO_URL = "https://raw.githubusercontent.com/clover-yan/gaokao-poetry/master/sentences.json"
+SHIJING_URL = "https://raw.githubusercontent.com/chinese-poetry/chinese-poetry/master/%E8%AF%97%E7%BB%8F/shijing.json"
 POETRY_SEARCH_URL = "https://poetry.palemoky.com/api/search"
 CACHE_MAX_AGE = timedelta(days=14)
 USER_AGENT = "Codex poem deploy/1.0"
@@ -152,6 +153,25 @@ def load_gaokao_dataset() -> list[dict]:
         raise
 
 
+def load_shijing_dataset() -> list[dict]:
+    target = cache_dir() / "shijing.json"
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    if target.exists():
+        mtime = datetime.fromtimestamp(target.stat().st_mtime, tz=timezone.utc)
+        if datetime.now(timezone.utc) - mtime <= CACHE_MAX_AGE:
+            return json.loads(target.read_text(encoding="utf-8"))
+
+    try:
+        payload = fetch_json(SHIJING_URL)
+        target.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        return payload  # type: ignore[return-value]
+    except Exception:
+        if target.exists():
+            return json.loads(target.read_text(encoding="utf-8"))
+        raise
+
+
 def search_local_library(title: str, author: str) -> LookupResult | None:
     best_entry = None
     best_score = 0
@@ -197,8 +217,33 @@ def search_gaokao(title: str, author: str) -> LookupResult | None:
     )
 
 
+def search_shijing(title: str, author: str) -> LookupResult | None:
+    normalized_author = normalize(author)
+    if normalized_author and normalized_author not in {"诗经", "佚名", "无名氏"}:
+        return None
+
+    best_entry = None
+    best_score = 0
+    for entry in load_shijing_dataset():
+        score = score_title(entry.get("title", ""), title)
+        if score > best_score:
+            best_entry = entry
+            best_score = score
+
+    if not best_entry or best_score <= 0:
+        return None
+
+    return LookupResult(
+        title=best_entry["title"],
+        author="",
+        dynasty="先秦",
+        content=best_entry.get("content", []),
+        source="chinese-poetry《诗经》",
+    )
+
+
 def search_poetry_api(title: str, author: str) -> LookupResult | None:
-    if len(normalize(title)) < 2:
+    if len(normalize(title)) < 3:
         return None
 
     params = urllib.parse.urlencode(
@@ -249,6 +294,13 @@ def lookup(title: str, author: str = "") -> LookupResult:
             return result
     except Exception as exc:
         errors.append(f"补充古文库：{exc}")
+
+    try:
+        result = search_shijing(title, author)
+        if result:
+            return result
+    except Exception as exc:
+        errors.append(f"《诗经》补充库：{exc}")
 
     try:
         result = search_poetry_api(title, author)
