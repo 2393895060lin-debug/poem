@@ -25,6 +25,7 @@ let activeStroke = null;
 let activeStrokePointerId = null;
 const touchPointers = new Map();
 let touchPanState = null;
+let removeMobileTouchGuards = null;
 
 function escapeSvg(value) {
   return String(value)
@@ -118,6 +119,36 @@ function maybeShowAnnotationHelp() {
   if (!dialog || dialog.open) return;
   rememberAnnotationHelpShown();
   dialog.showModal();
+}
+
+function shouldBlockNativeTouchGesture(target) {
+  if (!isMobileViewport() || !state.annotationMode) return false;
+  if (!(target instanceof Element)) return true;
+  return !target.closest(".annotation-tools");
+}
+
+function syncMobileTouchGuards() {
+  if (removeMobileTouchGuards) {
+    removeMobileTouchGuards();
+    removeMobileTouchGuards = null;
+  }
+
+  if (!isMobileViewport() || !state.annotationMode) return;
+
+  const preventNativeGesture = (event) => {
+    if (!shouldBlockNativeTouchGesture(event.target)) return;
+    event.preventDefault();
+  };
+
+  document.addEventListener("touchmove", preventNativeGesture, { passive: false, capture: true });
+  document.addEventListener("gesturestart", preventNativeGesture, { passive: false, capture: true });
+  document.addEventListener("gesturechange", preventNativeGesture, { passive: false, capture: true });
+
+  removeMobileTouchGuards = () => {
+    document.removeEventListener("touchmove", preventNativeGesture, true);
+    document.removeEventListener("gesturestart", preventNativeGesture, true);
+    document.removeEventListener("gesturechange", preventNativeGesture, true);
+  };
 }
 
 function createNoteGaps(unit) {
@@ -403,6 +434,7 @@ function renderAnnotationLayer() {
   syncAnnotationLayerSize();
   stage.classList.toggle("annotation-active", state.annotationMode);
   document.body.classList.toggle("mobile-annotation-focus", isMobileViewport() && state.annotationMode);
+  syncMobileTouchGuards();
   modeButton.classList.toggle("is-active", state.annotationMode);
   eraserButton.classList.toggle("is-active", state.annotationMode && state.eraserMode);
   modeButton.textContent = state.annotationMode ? "退出批注" : "批注模式";
