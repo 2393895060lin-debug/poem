@@ -5,10 +5,12 @@ import html
 import json
 import os
 import re
+import secrets
 import sys
 import threading
 import time
 from http import HTTPStatus
+from http.cookies import SimpleCookie
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from queue import Queue
@@ -44,6 +46,8 @@ MOBILE_USER_AGENT = (
 )
 SYNC_ENRICH_TIMEOUT_SECONDS = 9.5
 SYNC_ENRICH_REQUEST_TIMEOUT_SECONDS = 3.0
+HUMAN_VERIFICATION_COOKIE = "poem_human_verified"
+HUMAN_VERIFICATION_TTL_SECONDS = int(os.getenv("POEM_HUMAN_VERIFICATION_TTL_SECONDS", "21600"))
 AUTHOR_FAME_SCORES = {
     "李白": 120,
     "杜甫": 118,
@@ -88,6 +92,49 @@ POPULAR_WORK_SCORES = {
     ("卜算子", "李之仪"): 125,
     ("清平乐", "辛弃疾"): 125,
 }
+verified_human_tokens: dict[str, float] = {}
+verified_human_tokens_lock = threading.Lock()
+
+
+def prune_verified_human_tokens(now: float | None = None) -> None:
+    current_time = now if now is not None else time.time()
+    with verified_human_tokens_lock:
+        expired_tokens = [token for token, expires_at in verified_human_tokens.items() if expires_at <= current_time]
+        for token in expired_tokens:
+            verified_human_tokens.pop(token, None)
+
+
+def issue_human_verification_token() -> tuple[str, int]:
+    now = time.time()
+    prune_verified_human_tokens(now)
+    expires_at = now + HUMAN_VERIFICATION_TTL_SECONDS
+    token = secrets.token_urlsafe(24)
+    with verified_human_tokens_lock:
+        verified_human_tokens[token] = expires_at
+    return token, HUMAN_VERIFICATION_TTL_SECONDS
+
+
+def is_human_verified(cookie_header: str | None) -> bool:
+    if not cookie_header:
+        return False
+    cookie = SimpleCookie()
+    try:
+        cookie.load(cookie_header)
+    except Exception:
+        return False
+    morsel = cookie.get(HUMAN_VERIFICATION_COOKIE)
+    if not morsel:
+        return False
+    token = morsel.value
+    now = time.time()
+    with verified_human_tokens_lock:
+        expires_at = verified_human_tokens.get(token)
+        if not expires_at:
+            return False
+        if expires_at <= now:
+            verified_human_tokens.pop(token, None)
+            return False
+    return True
 
 SUPPLEMENTS = {
     "岳阳楼记": {
@@ -454,6 +501,24 @@ def normalize_for_match(text: str) -> str:
     return re.sub(r"[\s\u3000《》〈〉「」『』【】()（）〔〕]", "", text or "")
 
 
+def title_match_score(candidate_title: str, requested_title: str) -> int:
+    candidate_norm = normalize_for_match(candidate_title)
+    requested_norm = normalize_for_match(requested_title)
+    if not candidate_norm or not requested_norm:
+        return 0
+    if candidate_norm == requested_norm:
+        return 1000
+    if len(requested_norm) < 2:
+        return 0
+    if candidate_norm.startswith(requested_norm):
+        return 780 - max(len(candidate_norm) - len(requested_norm), 0) * 12
+    if requested_norm in candidate_norm:
+        return 720 - candidate_norm.find(requested_norm) * 8 - max(len(candidate_norm) - len(requested_norm), 0) * 10
+    if len(candidate_norm) >= 2 and requested_norm.startswith(candidate_norm):
+        return 560 - max(len(requested_norm) - len(candidate_norm), 0) * 14
+    return 0
+
+
 def extract_source_text(html_text: str):
     match = re.search(r'<p class="source"[^>]*>(.*?)</p>', html_text, re.S)
     if not match:
@@ -491,7 +556,7 @@ def extract_guwendao_candidate_paths(title: str, author: str, timeout: float = 2
     seen = set()
 
     for href, anchor_text in re.findall(r'href="(/shiwenv_[a-z0-9]+\.aspx)"[^>]*>([^<]+)</a>', html_text):
-        if normalize_for_match(anchor_text) != normalize_for_match(title):
+        if title_match_score(anchor_text, title) <= 0:
             continue
         if href in seen:
             continue
@@ -512,7 +577,7 @@ def extract_guwendao_search_paths(title: str, timeout: float = 20):
 
     for href, anchor_text in re.findall(r'href="(/shiwenv_[a-z0-9]+\.aspx)"[^>]*>(.*?)</a>', html_text, re.S):
         clean_text = re.sub(r"<[^>]+>", "", anchor_text).strip()
-        if normalize_for_match(clean_text) != normalize_for_match(title):
+        if title_match_score(clean_text, title) <= 0:
             continue
         if href in seen:
             continue
@@ -525,8 +590,7 @@ def detail_page_match_score(html_text: str, title: str, author: str, content_lin
     page_title = extract_title_from_detail_page(html_text)
     page_author = extract_author_from_detail_page(html_text)
     score = 0
-    if normalize_for_match(page_title) == normalize_for_match(title):
-        score += 10
+    score += min(title_match_score(page_title, title) // 100, 10)
     if author and normalize_for_match(author) and normalize_for_match(author) in normalize_for_match(page_author):
         score += 5
     if not author:
@@ -672,8 +736,7 @@ def candidate_source_score(source: str) -> int:
 def same_title_candidate_score(candidate, requested_title: str, preferred_authors: set[str]) -> int:
     author_variants = normalized_name_variants(candidate.author)
     score = candidate_source_score(candidate.source)
-    if title_matches_exact(candidate.title, requested_title):
-        score += 200
+    score += title_match_score(candidate.title, requested_title)
     if preferred_authors and any(
         preferred in current or current in preferred
         for preferred in preferred_authors
@@ -681,7 +744,7 @@ def same_title_candidate_score(candidate, requested_title: str, preferred_author
     ):
         score += 260
     score += author_fame_score(candidate.author)
-    score += popular_work_score(requested_title, candidate.author)
+    score += popular_work_score(candidate.title, candidate.author)
     if candidate.dynasty:
         score += 10
     if candidate.content:
@@ -694,7 +757,7 @@ def collect_priority_candidates_from_lookup_sources(title: str, author: str):
     seen = set()
 
     for item in getattr(LOOKUP_MODULE, "LOCAL_TEXT_LIBRARY", []):
-        if not title_matches_exact(item.get("title", ""), title):
+        if title_match_score(item.get("title", ""), title) <= 0:
             continue
         if not author_matches_requested(item.get("author", ""), author):
             continue
@@ -713,7 +776,7 @@ def collect_priority_candidates_from_lookup_sources(title: str, author: str):
 
     try:
         for item in LOOKUP_MODULE.load_gaokao_dataset():
-            if not title_matches_exact(item.get("title", ""), title):
+            if title_match_score(item.get("title", ""), title) <= 0:
                 continue
             if not author_matches_requested(item.get("author", ""), author):
                 continue
@@ -742,7 +805,7 @@ def collect_priority_candidates_from_lookup_sources(title: str, author: str):
             for item in payload.get("data", []):
                 item_title = item.get("title", "")
                 item_author = ((item.get("author") or {}).get("name")) or ""
-                if not title_matches_exact(item_title, title):
+                if title_match_score(item_title, title) <= 0:
                     continue
                 if not author_matches_requested(item_author, author):
                     continue
@@ -882,7 +945,7 @@ def registry_lookup_entry(title: str, author: str):
     matches = []
     preferred_authors = preferred_authors_for_title(title)
     for index, item in enumerate(TEXTBOOK_SOURCE_REGISTRY.get("works", [])):
-        if normalize_key(item.get("title", "")) != title_key:
+        if title_match_score(item.get("title", ""), title) <= 0:
             continue
         candidate_author = normalize_key(item.get("author", ""))
         if author_key and candidate_author and author_key not in candidate_author:
@@ -1362,7 +1425,7 @@ def build_translation_references(title: str, author: str):
 def build_payload(title: str, author: str = "", wait_for_enrichment: bool = False, force_refresh: bool = False, _sync_attempted: bool = False):
     resolved_title = resolve_known_title_alias(title)
     try:
-        result = lookup_preferred_same_title_result(resolved_title, author or "") if not author else None
+        result = lookup_preferred_same_title_result(resolved_title, author or "")
         if not result:
             result = LOOKUP_MODULE.lookup(resolved_title, author or "")
     except Exception as exc:
@@ -1483,12 +1546,44 @@ class AppHandler(SimpleHTTPRequestHandler):
 
     def do_GET(self):
         parsed = urlparse(self.path)
+        if parsed.path == "/api/human-status":
+            self.handle_human_status()
+            return
         if parsed.path == "/api/lookup":
+            if not self.request_is_human_verified():
+                self.write_json({"error": "请先完成人机验证。"}, HTTPStatus.FORBIDDEN)
+                return
             self.handle_lookup(parsed)
+            return
+        if parsed.path == "/reader.html" and not self.request_is_human_verified():
+            self.redirect("/index.html")
             return
         if parsed.path == "/":
             self.path = "/index.html"
         super().do_GET()
+
+    def do_POST(self):
+        parsed = urlparse(self.path)
+        if parsed.path == "/api/human-verify":
+            self.handle_human_verify()
+            return
+        self.send_error(HTTPStatus.NOT_FOUND, "Not Found")
+
+    def request_is_human_verified(self) -> bool:
+        return is_human_verified(self.headers.get("Cookie"))
+
+    def handle_human_status(self):
+        self.write_json({"verified": self.request_is_human_verified()}, HTTPStatus.OK)
+
+    def handle_human_verify(self):
+        token, max_age = issue_human_verification_token()
+        self.write_json(
+            {"verified": True, "maxAge": max_age},
+            HTTPStatus.OK,
+            extra_headers={
+                "Set-Cookie": f"{HUMAN_VERIFICATION_COOKIE}={token}; Max-Age={max_age}; Path=/; HttpOnly; SameSite=Lax"
+            },
+        )
 
     def handle_lookup(self, parsed):
         params = parse_qs(parsed.query)
@@ -1509,13 +1604,20 @@ class AppHandler(SimpleHTTPRequestHandler):
 
         self.write_json(payload, HTTPStatus.OK)
 
-    def write_json(self, payload, status):
+    def write_json(self, payload, status, extra_headers=None):
         raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(raw)))
+        for key, value in (extra_headers or {}).items():
+            self.send_header(key, value)
         self.end_headers()
         self.wfile.write(raw)
+
+    def redirect(self, location: str):
+        self.send_response(HTTPStatus.FOUND)
+        self.send_header("Location", location)
+        self.end_headers()
 
 
 def main():

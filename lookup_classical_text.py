@@ -100,7 +100,21 @@ def author_matches(candidate_author: str, requested_author: str) -> bool:
 
 
 def score_title(candidate_title: str, requested_title: str) -> int:
-    return 100 if normalize(candidate_title) == normalize(requested_title) else 0
+    candidate = normalize(candidate_title)
+    requested = normalize(requested_title)
+    if not candidate or not requested:
+        return 0
+    if candidate == requested:
+        return 1000
+    if len(requested) < 2:
+        return 0
+    if candidate.startswith(requested):
+        return 780 - max(len(candidate) - len(requested), 0) * 12
+    if requested in candidate:
+        return 720 - candidate.find(requested) * 8 - max(len(candidate) - len(requested), 0) * 10
+    if len(candidate) >= 2 and requested.startswith(candidate):
+        return 560 - max(len(requested) - len(candidate), 0) * 14
+    return 0
 
 
 def cache_dir() -> Path:
@@ -149,7 +163,7 @@ def search_local_library(title: str, author: str) -> LookupResult | None:
             best_entry = entry
             best_score = score
 
-    if not best_entry or best_score < 100:
+    if not best_entry or best_score <= 0:
         return None
 
     return LookupResult(
@@ -172,7 +186,7 @@ def search_gaokao(title: str, author: str) -> LookupResult | None:
             best_entry = entry
             best_score = score
 
-    if not best_entry or best_score < 100:
+    if not best_entry or best_score <= 0:
         return None
 
     return LookupResult(
@@ -184,7 +198,7 @@ def search_gaokao(title: str, author: str) -> LookupResult | None:
 
 
 def search_poetry_api(title: str, author: str) -> LookupResult | None:
-    if len(normalize(title)) < 3:
+    if len(normalize(title)) < 2:
         return None
 
     params = urllib.parse.urlencode(
@@ -207,7 +221,7 @@ def search_poetry_api(title: str, author: str) -> LookupResult | None:
             best_entry = entry
             best_score = score
 
-    if not best_entry or best_score < 100:
+    if not best_entry or best_score <= 0:
         return None
 
     return LookupResult(

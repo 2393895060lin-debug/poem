@@ -1,0 +1,99 @@
+:root {
+  --human-overlay-bg: rgba(28, 24, 17, 0.58);
+  --human-card-bg: linear-gradient(180deg, rgba(255, 253, 246, 0.98), rgba(246, 240, 224, 0.96));
+  --human-card-border: rgba(180, 167, 128, 0.48);
+  --human-card-shadow: 0 24px 60px rgba(54, 44, 28, 0.22);
+  --human-accent: #56753d;
+  --human-accent-deep: #405730;
+  --human-danger: #b5483c;
+}
+
+.human-verification-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: var(--human-overlay-bg);
+  backdrop-filter: blur(8px);
+}
+
+.human-verification-overlay.is-active {
+  display: flex;
+}
+
+.human-verification-card {
+  width: min(100%, 420px);
+  padding: 28px 24px 24px;
+  border: 1px solid var(--human-card-border);
+  border-radius: 24px;
+  background: var(--human-card-bg);
+  box-shadow: var(--human-card-shadow);
+}
+
+.human-verification-title {
+  margin: 0;
+  font-size: 26px;
+  line-height: 1.2;
+  color: #2a241a;
+}
+
+.human-verification-copy {
+  margin: 14px 0 0;
+  color: #61594a;
+  font-size: 14px;
+  line-height: 1.65;
+}
+
+.human-verification-check {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-top: 20px;
+  padding: 16px 18px;
+  border: 1px solid rgba(183, 173, 140, 0.64);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.human-verification-check input {
+  width: 20px;
+  height: 20px;
+  accent-color: var(--human-accent);
+  cursor: pointer;
+}
+
+.human-verification-check span {
+  font-size: 16px;
+  color: #2f2a20;
+}
+
+.human-verification-action {
+  width: 100%;
+  height: 44px;
+  margin-top: 18px;
+  border: 1px solid rgba(78, 103, 55, 0.28);
+  border-radius: 12px;
+  background: linear-gradient(180deg, var(--human-accent), var(--human-accent-deep));
+  color: #fffdf7;
+  font-size: 15px;
+  cursor: pointer;
+}
+
+.human-verification-action:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.human-verification-message {
+  min-height: 20px;
+  margin-top: 12px;
+  color: #61594a;
+  font-size: 13px;
+}
+
+.human-verification-message.is-error {
+  color: var(--human-danger);
+}

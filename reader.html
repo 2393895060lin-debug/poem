@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>古诗文排版查询</title>
   <link rel="stylesheet" href="./styles.css" />
+  <link rel="stylesheet" href="./human-verification.css" />
 </head>
 <body>
   <div class="page-shell">
@@ -125,6 +126,20 @@
     </div>
   </dialog>
 
+  <div id="humanVerificationOverlay" class="human-verification-overlay" aria-modal="true" role="dialog" aria-labelledby="humanVerificationTitle">
+    <div class="human-verification-card">
+      <h2 id="humanVerificationTitle" class="human-verification-title">访问前验证</h2>
+      <p class="human-verification-copy">为减少异常请求，进入排版页前需要先完成人机确认。验证通过后才允许查询内容和访问接口。</p>
+      <label class="human-verification-check" for="humanVerificationCheckbox">
+        <input id="humanVerificationCheckbox" type="checkbox" />
+        <span>我不是机器人</span>
+      </label>
+      <button id="humanVerificationButton" class="human-verification-action" type="button" disabled>继续访问</button>
+      <div id="humanVerificationMessage" class="human-verification-message"></div>
+    </div>
+  </div>
+
+  <script src="./human-verification.js"></script>
   <script src="./app.js"></script>
 </body>
 </html>

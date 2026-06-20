@@ -421,7 +421,7 @@ async function fetchArticle(title, author) {
   const response = await fetch(`/api/lookup?${query}`);
   const payload = await response.json();
   if (!response.ok) {
-    throw new Error(payload.error || "查询失败");
+    throw new Error(payload.error || (response.status === 403 ? "请先完成人机验证。" : "查询失败"));
   }
   return payload;
 }
@@ -655,7 +655,7 @@ function render() {
   renderAnnotationLayer();
 }
 
-function bootstrap() {
+function startReaderApp() {
   syncToggle("toggleTranslation", "showTranslation", toggleTargets.toggleTranslation);
   syncToggle("toggleNotes", "showNotes", toggleTargets.toggleNotes);
   syncToggle("togglePinyin", "showPinyin", toggleTargets.togglePinyin);
@@ -682,6 +682,17 @@ function bootstrap() {
   document.getElementById("searchTitle").value = "岳阳楼记";
   document.getElementById("searchAuthor").value = "范仲淹";
   runSearch();
+}
+
+function bootstrap() {
+  window.humanVerification.init({
+    overlayId: "humanVerificationOverlay",
+    checkboxId: "humanVerificationCheckbox",
+    buttonId: "humanVerificationButton",
+    messageId: "humanVerificationMessage",
+    gateSelector: ".page-shell",
+    onVerified: startReaderApp
+  });
 }
 
 bootstrap();

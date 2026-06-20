@@ -990,3 +990,337 @@ body {
     padding-bottom: 40px;
   }
 }
+
+@media (max-width: 820px) {
+  .app-main {
+    gap: 0;
+  }
+
+  .page-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .page-rail {
+    display: none;
+  }
+
+  .top-toolbar {
+    position: static;
+    padding: 10px 14px 12px;
+    gap: 8px 10px;
+    align-items: flex-start;
+  }
+
+  .workspace {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    padding: 10px 14px 24px;
+  }
+
+  .reader-panel {
+    padding-bottom: 0;
+  }
+
+  .article-canvas {
+    padding-right: 0;
+  }
+
+  .control-panel {
+    order: -1;
+    display: grid;
+    gap: 12px;
+    padding: 0 0 24px;
+  }
+
+  .query-card,
+  .preview-frame {
+    margin-bottom: 0;
+  }
+
+  .query-card {
+    box-shadow: 0 14px 30px rgba(83, 74, 48, 0.1);
+  }
+
+  .preview-frame {
+    order: 4;
+    padding: 14px;
+  }
+
+  .preview-paper {
+    max-width: 420px;
+    margin: 0 auto;
+  }
+
+  .action-button-primary {
+    order: 2;
+  }
+
+  .action-button-secondary {
+    order: 3;
+    margin-top: 0;
+  }
+
+  .panel-divider {
+    order: 5;
+  }
+
+  .panel-divider {
+    margin-top: 22px;
+    font-size: 20px;
+  }
+}
+
+@media (max-width: 640px) {
+  .query-status {
+    width: 100%;
+    order: -1;
+    padding: 2px 2px 6px;
+    font-size: 12px;
+  }
+
+  .back-home-link {
+    min-height: 32px;
+  }
+
+  .toggle-row-compact {
+    gap: 7px;
+    min-height: 32px;
+    padding: 0 10px;
+    border: 1px solid rgba(190, 182, 156, 0.72);
+    border-radius: 999px;
+    background: rgba(255, 251, 240, 0.84);
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.62);
+  }
+
+  .annotation-tools {
+    width: 100%;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding-top: 4px;
+    border-top: 1px solid rgba(190, 182, 156, 0.52);
+  }
+
+  .annotation-mode-button,
+  .annotation-clear-button {
+    min-height: 32px;
+  }
+
+  .annotation-control {
+    min-height: 32px;
+    padding: 0 10px;
+    border: 1px solid rgba(190, 182, 156, 0.72);
+    border-radius: 999px;
+    background: rgba(255, 251, 240, 0.84);
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.62);
+  }
+
+  .annotation-control input[type="range"] {
+    width: 96px;
+  }
+
+  .title-grid {
+    margin-bottom: 24px;
+  }
+
+  .title-cell,
+  .author-cell {
+    width: 44px;
+    height: 40px;
+  }
+
+  .title-cell {
+    font-size: 24px;
+  }
+
+  .author-pinyin {
+    gap: 12px;
+    padding-left: 8px;
+    font-size: 14px;
+  }
+
+  .author-stack {
+    margin-bottom: 22px;
+  }
+
+  .article-canvas {
+    gap: 22px;
+  }
+
+  .line-block {
+    gap: 10px 3px;
+  }
+
+  .character-cell {
+    width: 36px;
+    min-height: 68px;
+    padding-top: 6px;
+    padding-bottom: 6px;
+  }
+
+  .character-cell.punctuation {
+    width: 28px;
+  }
+
+  .character-pinyin {
+    min-height: 18px;
+    margin-bottom: 6px;
+    font-size: 12px;
+  }
+
+  .character-glyph {
+    font-size: 22px;
+  }
+
+  .note-gap {
+    width: 12px;
+    min-height: 68px;
+    flex-basis: 12px;
+    margin-left: -1px;
+    margin-right: 1px;
+  }
+
+  .note-gap.stacked {
+    width: 16px;
+    flex-basis: 16px;
+  }
+
+  .note-marker {
+    width: 12px;
+    height: 12px;
+    font-size: 8px;
+  }
+
+  .query-card,
+  .supplement-card {
+    border-radius: 16px;
+  }
+
+  .query-card {
+    padding: 16px 14px 14px;
+  }
+
+  .query-card-title {
+    margin-bottom: 12px;
+    font-size: 14px;
+    letter-spacing: 0.18em;
+  }
+
+  .query-label {
+    gap: 6px;
+    margin-bottom: 10px;
+    font-size: 13px;
+  }
+
+  .query-input {
+    height: 42px;
+    padding: 0 12px;
+  }
+
+  .query-button {
+    height: 44px;
+    font-size: 17px;
+  }
+
+  .action-button {
+    height: 52px;
+    font-size: 18px;
+  }
+
+  .dialog-preview-host {
+    padding: 14px;
+  }
+
+  .print-preview-sheet {
+    padding: 22px 18px 28px;
+  }
+}
+
+@media (max-width: 420px) {
+  .workspace {
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+
+  .top-toolbar {
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+
+  .toggle-row-compact {
+    font-size: 13px;
+  }
+
+  .back-home-link,
+  .toggle-row-compact,
+  .annotation-mode-button,
+  .annotation-clear-button {
+    font-size: 12px;
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+
+  .title-cell,
+  .author-cell {
+    width: 40px;
+    height: 38px;
+  }
+
+  .title-cell {
+    font-size: 22px;
+  }
+
+  .character-cell {
+    width: 33px;
+    min-height: 62px;
+  }
+
+  .character-cell.punctuation {
+    width: 24px;
+  }
+
+  .character-glyph {
+    font-size: 20px;
+  }
+
+  .character-pinyin {
+    font-size: 11px;
+  }
+
+  .line-block {
+    gap: 8px 2px;
+  }
+
+  .note-gap {
+    width: 10px;
+    min-height: 62px;
+    flex-basis: 10px;
+  }
+
+  .note-gap.stacked {
+    width: 14px;
+    flex-basis: 14px;
+  }
+
+  .query-card {
+    padding: 16px 14px 14px;
+  }
+
+  .annotation-tools {
+    gap: 6px;
+  }
+
+  .annotation-control {
+    gap: 5px;
+    padding-left: 8px;
+    padding-right: 8px;
+  }
+
+  .annotation-control input[type="range"] {
+    width: 76px;
+  }
+
+  .preview-frame {
+    padding: 10px;
+  }
+}

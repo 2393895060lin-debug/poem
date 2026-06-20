@@ -34,8 +34,17 @@ function bindEvents() {
 
 function init() {
   clearSearchFields();
-  bindEvents();
-  document.getElementById("searchTitle").focus();
+  window.humanVerification.init({
+    overlayId: "humanVerificationOverlay",
+    checkboxId: "humanVerificationCheckbox",
+    buttonId: "humanVerificationButton",
+    messageId: "humanVerificationMessage",
+    gateSelector: ".search-shell",
+    onVerified: () => {
+      bindEvents();
+      document.getElementById("searchTitle").focus();
+    }
+  });
 }
 
 init();
