@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>古诗文排版查询</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div class="page-shell">
+    <aside class="page-rail"></aside>
+    <main class="app-main">
+      <section class="top-toolbar">
+        <a class="back-home-link" href="./index.html">返回主页</a>
+        <div id="queryStatus" class="query-status">等待查询</div>
+        <div class="toggle-row toggle-row-compact">
+          <label class="toggle-check" for="toggleTranslation">
+            <input id="toggleTranslation" type="checkbox" />
+          </label>
+          <button class="toggle-jump" type="button" data-target-id="translationSection">译文</button>
+        </div>
+        <div class="toggle-row toggle-row-compact">
+          <label class="toggle-check" for="toggleNotes">
+            <input id="toggleNotes" type="checkbox" />
+          </label>
+          <button class="toggle-jump" type="button" data-target-id="notesSection">注释</button>
+        </div>
+        <div class="toggle-row toggle-row-compact">
+          <label class="toggle-check" for="togglePinyin">
+            <input id="togglePinyin" type="checkbox" checked />
+          </label>
+          <button class="toggle-jump" type="button" data-target-id="articleCanvas">拼音</button>
+        </div>
+        <div class="toggle-row toggle-row-compact">
+          <label class="toggle-check" for="toggleRecitation">
+            <input id="toggleRecitation" type="checkbox" />
+          </label>
+          <button class="toggle-jump" type="button" data-target-id="recitationSection">朗诵</button>
+        </div>
+        <div class="annotation-tools">
+          <button id="annotationModeButton" class="annotation-mode-button" type="button">批注模式</button>
+          <button id="eraserModeButton" class="annotation-mode-button annotation-eraser-button" type="button">橡皮擦</button>
+          <label class="annotation-control" for="annotationColor">
+            <span>颜色</span>
+            <input id="annotationColor" type="color" value="#c84c31" />
+          </label>
+          <label class="annotation-control" for="annotationWidth">
+            <span>粗细</span>
+            <input id="annotationWidth" type="range" min="2" max="14" step="1" value="4" />
+          </label>
+          <button id="clearAnnotationsButton" class="annotation-clear-button" type="button">清空</button>
+        </div>
+      </section>
+
+      <div class="workspace">
+      <section class="reader-panel">
+        <div id="readerStage" class="reader-stage">
+          <header class="reader-header">
+            <div id="titleGrid" class="title-grid"></div>
+            <div class="author-stack">
+              <div id="authorPinyin" class="author-pinyin"></div>
+              <div id="authorGrid" class="author-grid"></div>
+            </div>
+          </header>
+
+          <section id="articleCanvas" class="article-canvas"></section>
+
+          <section id="translationSection" class="supplement-card hidden">
+            <div class="section-kicker">译文</div>
+            <div id="translationBody" class="supplement-body"></div>
+          </section>
+
+          <section id="notesSection" class="supplement-card hidden">
+            <div class="section-kicker">注释</div>
+            <div id="notesBody" class="notes-list"></div>
+          </section>
+
+          <section id="recitationSection" class="supplement-card hidden">
+            <div class="section-kicker">朗诵参考</div>
+            <div id="recitationBody" class="recitation-list"></div>
+          </section>
+
+          <svg id="annotationLayer" class="annotation-layer" aria-hidden="true"></svg>
+        </div>
+      </section>
+
+      <aside class="control-panel">
+        <section class="query-card">
+          <div class="query-card-title">内容查询</div>
+          <label class="query-label">
+            <span>题目</span>
+            <input id="searchTitle" class="query-input" type="text" placeholder="例如：岳阳楼记、静夜思、桃花源记" />
+          </label>
+          <label class="query-label">
+            <span>作者</span>
+            <input id="searchAuthor" class="query-input" type="text" placeholder="可选，用于缩小结果范围" />
+          </label>
+          <button id="searchButton" class="query-button" type="button">排版显示</button>
+        </section>
+
+        <div class="preview-frame">
+          <div class="preview-paper">
+            <div id="previewSnapshot" class="preview-snapshot"></div>
+          </div>
+        </div>
+
+        <button id="downloadPdfButton" class="action-button action-button-primary">下载PDF</button>
+        <button id="previewPdfButton" class="action-button action-button-secondary">查看PDF效果</button>
+
+        <div class="panel-divider">
+          <span>PDF设置</span>
+        </div>
+      </aside>
+      </div>
+    </main>
+  </div>
+
+  <dialog id="pdfDialog" class="pdf-dialog">
+    <div class="pdf-dialog-inner">
+      <div class="pdf-dialog-head">
+        <div>PDF效果预览</div>
+        <button id="closeDialogButton" class="dialog-close" type="button">关闭</button>
+      </div>
+      <div id="dialogPreviewHost" class="dialog-preview-host"></div>
+    </div>
+  </dialog>
+
+  <script src="./app.js"></script>
+</body>
+</html>

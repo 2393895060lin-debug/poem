@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>古诗文搜索</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Liu+Jian+Mao+Cao&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="./home.css" />
+</head>
+<body>
+  <main class="home-page">
+    <section class="hero">
+      <h1 class="hero-logo" aria-label="古诗文搜索">古诗文搜索</h1>
+      <p class="hero-copy">输入诗歌题目和诗人名字，进入完整排版页</p>
+
+      <div class="search-shell">
+        <label class="search-bar" for="searchTitle">
+          <svg class="search-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M15.5 14h-.79l-.28-.27a6 6 0 1 0-.71.71l.27.28v.79L19 20.5 20.5 19zM10 14a4 4 0 1 1 0-8 4 4 0 0 1 0 8z"></path>
+          </svg>
+          <input id="searchTitle" class="search-input" type="text" placeholder="诗歌名字，如：静夜思" autocomplete="off" />
+        </label>
+
+        <input id="searchAuthor" class="author-input" type="text" placeholder="诗人名字（可选）" autocomplete="off" />
+
+        <div class="search-actions">
+          <button id="searchButton" class="search-button" type="button">进入查询页</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script src="./home.js"></script>
+</body>
+</html>

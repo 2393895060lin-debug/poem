@@ -1,0 +1,687 @@
+const state = {
+  article: null,
+  showTranslation: false,
+  showNotes: false,
+  showPinyin: true,
+  showRecitation: false,
+  annotationMode: false,
+  eraserMode: false,
+  annotationColor: "#c84c31",
+  annotationWidth: 4,
+  annotations: [],
+  loading: false,
+  error: ""
+};
+
+const punctuationMarks = new Set(["，", "。", "；", "：", "？", "！", "“", "”", "〔", "〕", "（", "）", "《", "》", "、"]);
+const inlineSymbols = new Set(["〔", "〕", "（", "）", "《", "》", "[", "]", "【", "】"]);
+const toggleTargets = {
+  toggleTranslation: "translationSection",
+  toggleNotes: "notesSection",
+  togglePinyin: "articleCanvas"
+};
+let activeStroke = null;
+
+function escapeSvg(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
+}
+
+function shouldHidePinyin(char) {
+  return punctuationMarks.has(char) || inlineSymbols.has(char);
+}
+
+function createGridCells(values, className, host) {
+  host.innerHTML = "";
+  values.forEach((value) => {
+    const cell = document.createElement("div");
+    cell.className = className;
+    cell.textContent = value;
+    host.appendChild(cell);
+  });
+}
+
+function formatPreviewMeta(article) {
+  if (!article) {
+    return "输入题目后自动生成缩略预览";
+  }
+  const author = article.author || "佚名";
+  return article.dynasty ? `${author} [${article.dynasty}]` : author;
+}
+
+function mountHeader(article) {
+  createGridCells(article.title.split(""), "title-cell", document.getElementById("titleGrid"));
+  document.getElementById("authorPinyin").innerHTML = article.authorPinyin
+    .map((item) => `<span>${inlineSymbols.has(item) ? "" : item}</span>`)
+    .join("");
+  createGridCells(article.authorDisplay, "author-cell", document.getElementById("authorGrid"));
+  document.title = `${article.title} - 古诗文排版查询`;
+}
+
+function createArticleCell(unit) {
+  const cell = document.createElement("div");
+  cell.className = "character-cell";
+  if (punctuationMarks.has(unit.char)) {
+    cell.classList.add("punctuation");
+  }
+
+  const pinyin = document.createElement("div");
+  pinyin.className = "character-pinyin";
+  pinyin.textContent = shouldHidePinyin(unit.char) ? "" : unit.pinyin;
+
+  const glyph = document.createElement("div");
+  glyph.className = "character-glyph";
+  glyph.textContent = unit.char;
+
+  cell.append(pinyin, glyph);
+
+  return cell;
+}
+
+function resetAnnotations() {
+  state.annotations = [];
+  activeStroke = null;
+  renderAnnotationLayer();
+}
+
+function createNoteGaps(unit) {
+  if (!state.showNotes || !unit.noteNumbers?.length) {
+    return [];
+  }
+
+  return unit.noteNumbers.map((number, idx) => {
+    const gap = document.createElement("div");
+    gap.className = `note-gap${idx > 0 ? " stacked" : ""}`;
+    gap.dataset.noteIndex = String(number);
+
+    const marker = document.createElement("button");
+    marker.className = "note-marker";
+    marker.textContent = number;
+    marker.type = "button";
+    marker.dataset.noteIndex = String(number);
+    marker.title = `跳转到注释 ${number}`;
+
+    gap.appendChild(marker);
+    return gap;
+  });
+}
+
+function renderArticle() {
+  const articleCanvas = document.getElementById("articleCanvas");
+  articleCanvas.innerHTML = "";
+
+  if (state.loading) {
+    articleCanvas.innerHTML = `<div class="empty-state">正在查询并排版中...</div>`;
+    return;
+  }
+
+  if (state.error) {
+    articleCanvas.innerHTML = `<div class="empty-state empty-state-error">${state.error}</div>`;
+    return;
+  }
+
+  if (!state.article) {
+    articleCanvas.innerHTML = `<div class="empty-state">输入题目后开始排版。</div>`;
+    return;
+  }
+
+  articleCanvas.classList.toggle("hide-pinyin", !state.showPinyin);
+
+  state.article.lines.forEach((line) => {
+    const lineBlock = document.createElement("div");
+    lineBlock.className = "line-block";
+
+    line.forEach((unit) => {
+      lineBlock.appendChild(createArticleCell(unit));
+      createNoteGaps(unit).forEach((gap) => lineBlock.appendChild(gap));
+    });
+
+    articleCanvas.appendChild(lineBlock);
+  });
+
+  syncAnnotationLayerSize();
+}
+
+function renderNoteEntries(items) {
+  return items
+    .map((item) => `
+      <div class="note-entry" data-note-index="${item.index}">
+        <button class="note-index" type="button" data-note-index="${item.index}" title="跳回原文第 ${item.index} 处注释">${item.index}</button>
+        <div class="note-copy"><span class="note-term">${item.term}</span>${item.term ? "：" : ""}${item.text}</div>
+      </div>
+    `)
+    .join("");
+}
+
+function renderNoteGroups(article) {
+  const groups = article.noteGroups?.filter((group) => group.items?.length) || [];
+  if (!groups.length) {
+    return renderNoteEntries(article.notes || []);
+  }
+
+  return groups
+    .map((group) => `
+      <section class="note-group">
+        <div class="note-group-title">${group.label}</div>
+        <div class="note-group-list">
+          ${renderNoteEntries(group.items)}
+        </div>
+      </section>
+    `)
+    .join("");
+}
+
+function fillSupplementBody() {
+  const article = state.article;
+  if (!article) return;
+
+  document.getElementById("translationBody").innerHTML = article.translation.length
+    ? article.translation.map((paragraph) => `<p>${paragraph}</p>`).join("")
+    : `
+      <p class="supplement-empty">当前未收录现成白话译文，下面给你准备了可直接打开的译文参考入口。</p>
+      <div class="reference-link-list">
+        ${(article.translationReferences || [])
+          .map((item) => `
+            <a class="reference-link-card" href="${item.url}" target="_blank" rel="noreferrer">
+              <div class="reference-link-title">${item.label}</div>
+              <div class="reference-link-copy">${item.description}</div>
+            </a>
+          `)
+          .join("")}
+      </div>
+    `;
+
+  document.getElementById("notesBody").innerHTML = article.notes.length
+    ? renderNoteGroups(article)
+    : `<div class="supplement-empty">当前还没有这篇作品的注释，后续可以继续补充教材注释或通用注释。</div>`;
+  document.getElementById("recitationBody").innerHTML = (article.recitationReferences || [])
+    .map((item) => `
+      <a class="recitation-item" href="${item.url}" target="_blank" rel="noreferrer">
+        <div class="recitation-item-title">${item.label}</div>
+        <div class="recitation-item-copy">${item.description}</div>
+      </a>
+    `)
+    .join("");
+}
+
+function getAvailability(article) {
+  if (!article) {
+    return {
+      translation: false,
+      notes: false,
+      recitationReferences: false
+    };
+  }
+
+  return {
+    translation: true,
+    notes: true,
+    recitationReferences: Boolean(article.availability?.recitationReferences)
+  };
+}
+
+function updateToggleAvailability() {
+  const availability = getAvailability(state.article);
+
+  const pairs = [
+    ["toggleTranslation", "showTranslation", availability.translation],
+    ["toggleNotes", "showNotes", availability.notes],
+    ["toggleRecitation", "showRecitation", availability.recitationReferences]
+  ];
+
+  pairs.forEach(([id, key, enabled]) => {
+    const input = document.getElementById(id);
+    const row = input.closest(".toggle-row");
+    if (!enabled && id === "toggleRecitation") {
+      state[key] = false;
+    }
+    input.disabled = false;
+    input.checked = state[key];
+    row?.classList.toggle("is-unavailable", !enabled);
+  });
+}
+
+function renderSupplementSections() {
+  const availability = getAvailability(state.article);
+  updateToggleAvailability();
+
+  const translationSection = document.getElementById("translationSection");
+  const notesSection = document.getElementById("notesSection");
+  const recitationSection = document.getElementById("recitationSection");
+
+  if (!state.article) {
+    translationSection.classList.add("hidden");
+    notesSection.classList.add("hidden");
+    recitationSection.classList.add("hidden");
+    return;
+  }
+
+  fillSupplementBody();
+
+  translationSection.classList.toggle("hidden", !state.showTranslation || !availability.translation);
+  notesSection.classList.toggle("hidden", !state.showNotes || !availability.notes);
+  recitationSection.classList.toggle("hidden", !state.showRecitation || !availability.recitationReferences);
+}
+
+function buildPrintablePreview() {
+  const article = state.article;
+  if (!article) {
+    const empty = document.createElement("div");
+    empty.className = "print-preview-sheet";
+    empty.innerHTML = `<div class="empty-state">还没有可导出的内容。</div>`;
+    return empty;
+  }
+
+  const sheet = document.createElement("div");
+  sheet.className = "print-preview-sheet";
+
+  const titleGrid = document.createElement("div");
+  titleGrid.className = "title-grid";
+  article.title.split("").forEach((char) => {
+    const cell = document.createElement("div");
+    cell.className = "title-cell";
+    cell.textContent = char;
+    titleGrid.appendChild(cell);
+  });
+
+  const authorWrap = document.createElement("div");
+  authorWrap.className = "author-stack";
+  authorWrap.innerHTML = `
+    <div class="author-pinyin">${article.authorPinyin.map((item) => `<span>${inlineSymbols.has(item) ? "" : item}</span>`).join("")}</div>
+    <div class="author-grid">${article.authorDisplay.map((item) => `<div class="author-cell">${item}</div>`).join("")}</div>
+  `;
+
+  const articleCanvas = document.createElement("section");
+  articleCanvas.className = `article-canvas${state.showPinyin ? "" : " hide-pinyin"}`;
+  article.lines.forEach((line) => {
+    const lineBlock = document.createElement("div");
+    lineBlock.className = "line-block";
+    line.forEach((unit) => {
+      lineBlock.appendChild(createArticleCell(unit));
+      createNoteGaps(unit).forEach((gap) => lineBlock.appendChild(gap));
+    });
+    articleCanvas.appendChild(lineBlock);
+  });
+
+  sheet.append(titleGrid, authorWrap, articleCanvas);
+
+  if (state.showTranslation && article.translation.length) {
+    const section = document.createElement("section");
+    section.className = "supplement-card";
+    section.innerHTML = `<div class="section-kicker">译文</div><div class="supplement-body">${article.translation.map((item) => `<p>${item}</p>`).join("")}</div>`;
+    sheet.appendChild(section);
+  }
+
+  if (state.showNotes && article.notes.length) {
+    const section = document.createElement("section");
+    section.className = "supplement-card";
+    section.innerHTML = `<div class="section-kicker">注释</div><div class="notes-list">${renderNoteGroups(article)}</div>`;
+    sheet.appendChild(section);
+  }
+
+  return sheet;
+}
+
+function renderPreviewSnapshot() {
+  const host = document.getElementById("previewSnapshot");
+  host.innerHTML = "";
+
+  const previewHeader = document.createElement("div");
+  previewHeader.className = "preview-header";
+  previewHeader.innerHTML = `
+    <div class="preview-topline"></div>
+    <div class="preview-title">${state.article ? state.article.title : "古诗文排版预览"}</div>
+    <div class="preview-meta">${formatPreviewMeta(state.article)}</div>
+  `;
+
+  const previewBody = document.createElement("div");
+  previewBody.className = "preview-scale-shell";
+
+  const previewScale = document.createElement("div");
+  previewScale.className = "preview-scale";
+  previewScale.appendChild(buildPrintablePreview());
+
+  previewBody.appendChild(previewScale);
+  host.append(previewHeader, previewBody);
+}
+
+function syncAnnotationLayerSize() {
+  const stage = document.getElementById("readerStage");
+  const layer = document.getElementById("annotationLayer");
+  if (!stage || !layer) return;
+  const width = Math.ceil(stage.scrollWidth || stage.getBoundingClientRect().width || 0);
+  const height = Math.ceil(stage.scrollHeight || stage.getBoundingClientRect().height || 0);
+  layer.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  layer.setAttribute("width", String(width));
+  layer.setAttribute("height", String(height));
+}
+
+function renderAnnotationLayer() {
+  const stage = document.getElementById("readerStage");
+  const layer = document.getElementById("annotationLayer");
+  const modeButton = document.getElementById("annotationModeButton");
+  const eraserButton = document.getElementById("eraserModeButton");
+  const clearButton = document.getElementById("clearAnnotationsButton");
+  if (!stage || !layer || !modeButton || !eraserButton || !clearButton) return;
+
+  syncAnnotationLayerSize();
+  stage.classList.toggle("annotation-active", state.annotationMode || state.eraserMode);
+  modeButton.classList.toggle("is-active", state.annotationMode);
+  eraserButton.classList.toggle("is-active", state.eraserMode);
+  modeButton.textContent = state.annotationMode ? "退出批注" : "批注模式";
+  eraserButton.textContent = state.eraserMode ? "退出橡皮擦" : "橡皮擦";
+  clearButton.disabled = state.annotations.length === 0;
+
+  layer.innerHTML = state.annotations
+    .map((stroke, index) => {
+      const pathData = stroke.points
+        .map((point, index) => `${index === 0 ? "M" : "L"} ${point.x.toFixed(1)} ${point.y.toFixed(1)}`)
+        .join(" ");
+      return `<path class="annotation-path" data-stroke-index="${index}" d="${escapeSvg(pathData)}" stroke="${escapeSvg(stroke.color)}" stroke-width="${stroke.width}"></path>`;
+    })
+    .join("");
+}
+
+function openPreviewDialog() {
+  const host = document.getElementById("dialogPreviewHost");
+  host.innerHTML = "";
+  host.appendChild(buildPrintablePreview());
+  document.getElementById("pdfDialog").showModal();
+}
+
+function downloadPdf() {
+  const printWindow = window.open("", "_blank", "width=1040,height=920");
+  if (!printWindow) return;
+
+  const styles = document.querySelector('link[rel="stylesheet"]').outerHTML;
+  const preview = buildPrintablePreview().outerHTML;
+  printWindow.document.write(`
+    <!DOCTYPE html>
+    <html lang="zh-CN">
+    <head>
+      <meta charset="UTF-8" />
+      <title>${state.article ? state.article.title : "古文排版"} PDF 预览</title>
+      ${styles}
+    </head>
+    <body>
+      <div class="dialog-preview-host">${preview}</div>
+    </body>
+    </html>
+  `);
+  printWindow.document.close();
+  printWindow.focus();
+  setTimeout(() => printWindow.print(), 320);
+}
+
+async function fetchArticle(title, author) {
+  const query = new URLSearchParams({ title, author }).toString();
+  const response = await fetch(`/api/lookup?${query}`);
+  const payload = await response.json();
+  if (!response.ok) {
+    throw new Error(payload.error || "查询失败");
+  }
+  return payload;
+}
+
+function getInitialQuery() {
+  const params = new URLSearchParams(window.location.search);
+  return {
+    title: params.get("title")?.trim() || "",
+    author: params.get("author")?.trim() || ""
+  };
+}
+
+async function runSearch() {
+  const title = document.getElementById("searchTitle").value.trim();
+  const author = document.getElementById("searchAuthor").value.trim();
+
+  if (!title) {
+    state.error = "请输入题目。";
+    state.article = null;
+    render();
+    return;
+  }
+
+  state.loading = true;
+  state.error = "";
+  render();
+
+  try {
+    const article = await fetchArticle(title, author);
+    state.article = article;
+    state.annotations = [];
+    activeStroke = null;
+    state.eraserMode = false;
+    state.error = "";
+    document.getElementById("searchTitle").value = article.title;
+    document.getElementById("searchAuthor").value = article.author || "";
+    mountHeader(article);
+  } catch (error) {
+    state.article = null;
+    state.error = error.message;
+  } finally {
+    state.loading = false;
+    render();
+  }
+}
+
+function jumpToSection(sectionId) {
+  if (!sectionId) return;
+  const target = document.getElementById(sectionId);
+  if (!target || target.classList.contains("hidden")) return;
+  target.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function syncToggle(id, key, sectionId) {
+  const input = document.getElementById(id);
+  input.checked = state[key];
+
+  input.addEventListener("change", () => {
+    state[key] = input.checked;
+    render();
+  });
+}
+
+function eventPointInLayer(event) {
+  const layer = document.getElementById("annotationLayer");
+  if (!layer) return null;
+  const rect = layer.getBoundingClientRect();
+  return {
+    x: event.clientX - rect.left,
+    y: event.clientY - rect.top
+  };
+}
+
+function bindAnnotationTools() {
+  const modeButton = document.getElementById("annotationModeButton");
+  const eraserButton = document.getElementById("eraserModeButton");
+  const colorInput = document.getElementById("annotationColor");
+  const widthInput = document.getElementById("annotationWidth");
+  const clearButton = document.getElementById("clearAnnotationsButton");
+  const layer = document.getElementById("annotationLayer");
+
+  modeButton.addEventListener("click", () => {
+    state.annotationMode = !state.annotationMode;
+    if (state.annotationMode) {
+      state.eraserMode = false;
+    }
+    activeStroke = null;
+    renderAnnotationLayer();
+  });
+
+  eraserButton.addEventListener("click", () => {
+    state.eraserMode = !state.eraserMode;
+    if (state.eraserMode) {
+      state.annotationMode = false;
+    }
+    activeStroke = null;
+    renderAnnotationLayer();
+  });
+
+  colorInput.addEventListener("input", () => {
+    state.annotationColor = colorInput.value;
+  });
+
+  widthInput.addEventListener("input", () => {
+    state.annotationWidth = Number(widthInput.value);
+  });
+
+  clearButton.addEventListener("click", () => {
+    resetAnnotations();
+  });
+
+  layer.addEventListener("pointerdown", (event) => {
+    if (!state.article) return;
+    if (state.eraserMode) {
+      const targetPath = event.target.closest(".annotation-path");
+      if (!targetPath) return;
+      event.preventDefault();
+      const strokeIndex = Number(targetPath.dataset.strokeIndex);
+      if (Number.isNaN(strokeIndex)) return;
+      state.annotations = state.annotations.filter((_, index) => index !== strokeIndex);
+      renderAnnotationLayer();
+      return;
+    }
+    if (!state.annotationMode) return;
+    event.preventDefault();
+    const point = eventPointInLayer(event);
+    if (!point) return;
+    activeStroke = {
+      color: state.annotationColor,
+      width: state.annotationWidth,
+      points: [point]
+    };
+    state.annotations = [...state.annotations, activeStroke];
+    layer.setPointerCapture(event.pointerId);
+    renderAnnotationLayer();
+  });
+
+  layer.addEventListener("pointermove", (event) => {
+    if (!state.annotationMode || !activeStroke) return;
+    event.preventDefault();
+    const point = eventPointInLayer(event);
+    if (!point) return;
+    activeStroke.points.push(point);
+    renderAnnotationLayer();
+  });
+
+  function finishStroke(event) {
+    if (!activeStroke) return;
+    if (event.pointerId !== undefined && layer.hasPointerCapture(event.pointerId)) {
+      layer.releasePointerCapture(event.pointerId);
+    }
+    activeStroke = null;
+  }
+
+  layer.addEventListener("pointerup", finishStroke);
+  layer.addEventListener("pointercancel", finishStroke);
+}
+
+function bindToolbarJumpButtons() {
+  document.querySelectorAll(".toggle-jump").forEach((button) => {
+    button.addEventListener("click", () => {
+      if (!state.article) return;
+      const sectionId = button.dataset.targetId;
+      jumpToSection(sectionId);
+    });
+  });
+}
+
+function bindSearchInputs() {
+  document.getElementById("searchButton").addEventListener("click", runSearch);
+  ["searchTitle", "searchAuthor"].forEach((id) => {
+    document.getElementById(id).addEventListener("keydown", (event) => {
+      if (event.key === "Enter") runSearch();
+    });
+  });
+}
+
+function findInteractiveRoot(element) {
+  return element.closest(".print-preview-sheet, .reader-panel");
+}
+
+function jumpToNote(index, trigger) {
+  const root = findInteractiveRoot(trigger);
+  if (!root) return;
+  const target = root.querySelector(`.note-entry[data-note-index="${index}"]`);
+  if (!target) return;
+  target.scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
+function jumpToSource(index, trigger) {
+  const root = findInteractiveRoot(trigger);
+  if (!root) return;
+  const target = root.querySelector(`.note-gap[data-note-index="${index}"] .note-marker`);
+  if (!target) return;
+  target.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
+}
+
+function bindNoteNavigation() {
+  document.addEventListener("click", (event) => {
+    const source = event.target.closest(".note-marker");
+    if (source) {
+      jumpToNote(source.dataset.noteIndex, source);
+      return;
+    }
+
+    const noteIndex = event.target.closest(".note-index");
+    if (noteIndex) {
+      jumpToSource(noteIndex.dataset.noteIndex, noteIndex);
+    }
+  });
+}
+
+function renderStatus() {
+  const status = document.getElementById("queryStatus");
+  if (state.loading) {
+    status.textContent = "正在排版";
+    return;
+  }
+  if (state.error) {
+    status.textContent = "未命中或查询失败";
+    return;
+  }
+  status.textContent = state.article ? `已排版：${state.article.title}` : "等待查询";
+}
+
+function render() {
+  renderArticle();
+  renderSupplementSections();
+  renderPreviewSnapshot();
+  renderStatus();
+  renderAnnotationLayer();
+}
+
+function bootstrap() {
+  syncToggle("toggleTranslation", "showTranslation", toggleTargets.toggleTranslation);
+  syncToggle("toggleNotes", "showNotes", toggleTargets.toggleNotes);
+  syncToggle("togglePinyin", "showPinyin", toggleTargets.togglePinyin);
+  syncToggle("toggleRecitation", "showRecitation", "recitationSection");
+  bindToolbarJumpButtons();
+  bindSearchInputs();
+  bindNoteNavigation();
+  bindAnnotationTools();
+
+  document.getElementById("downloadPdfButton").addEventListener("click", downloadPdf);
+  document.getElementById("previewPdfButton").addEventListener("click", openPreviewDialog);
+  document.getElementById("closeDialogButton").addEventListener("click", () => {
+    document.getElementById("pdfDialog").close();
+  });
+
+  window.addEventListener("resize", renderAnnotationLayer);
+  const initial = getInitialQuery();
+  if (initial.title) {
+    document.getElementById("searchTitle").value = initial.title;
+    document.getElementById("searchAuthor").value = initial.author;
+    runSearch();
+    return;
+  }
+  document.getElementById("searchTitle").value = "岳阳楼记";
+  document.getElementById("searchAuthor").value = "范仲淹";
+  runSearch();
+}
+
+bootstrap();
