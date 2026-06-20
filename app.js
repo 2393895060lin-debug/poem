@@ -389,6 +389,168 @@ function buildPrintablePreview() {
   return sheet;
 }
 
+function shouldUseImageExport() {
+  return isMobileViewport() && (navigator.maxTouchPoints || 0) > 0;
+}
+
+function getExportFileName(extension) {
+  const baseName = (state.article?.title || "古诗文排版")
+    .replace(/[\\/:*?"<>|]/g, "-")
+    .trim() || "古诗文排版";
+  return `${baseName}.${extension}`;
+}
+
+function collectDocumentStyleText() {
+  return Array.from(document.styleSheets)
+    .map((sheet) => {
+      try {
+        return Array.from(sheet.cssRules || [])
+          .map((rule) => rule.cssText)
+          .join("\n");
+      } catch (error) {
+        return "";
+      }
+    })
+    .join("\n");
+}
+
+function measurePrintablePreviewMarkup() {
+  const host = document.createElement("div");
+  host.style.position = "fixed";
+  host.style.left = "-99999px";
+  host.style.top = "0";
+  host.style.opacity = "0";
+  host.style.pointerEvents = "none";
+
+  const wrapper = document.createElement("div");
+  wrapper.style.display = "inline-block";
+  wrapper.style.padding = "24px";
+  wrapper.style.background = "linear-gradient(180deg, rgba(248, 245, 234, 0.96), rgba(240, 234, 216, 0.9))";
+
+  const sheet = buildPrintablePreview();
+  sheet.style.width = "720px";
+  sheet.style.maxWidth = "none";
+  sheet.style.margin = "0";
+
+  wrapper.appendChild(sheet);
+  host.appendChild(wrapper);
+  document.body.appendChild(host);
+
+  const width = Math.ceil(wrapper.scrollWidth);
+  const height = Math.ceil(wrapper.scrollHeight);
+  const markup = wrapper.outerHTML;
+  host.remove();
+  return { width, height, markup };
+}
+
+async function renderPrintablePreviewImageBlob() {
+  const { width, height, markup } = measurePrintablePreviewMarkup();
+  const stylesheet = collectDocumentStyleText();
+  const svgMarkup = `
+    <svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
+      <foreignObject width="100%" height="100%">
+        <div xmlns="http://www.w3.org/1999/xhtml">
+          <style>${stylesheet}</style>
+          ${markup}
+        </div>
+      </foreignObject>
+    </svg>
+  `;
+
+  const svgBlob = new Blob([svgMarkup], { type: "image/svg+xml;charset=utf-8" });
+  const svgUrl = URL.createObjectURL(svgBlob);
+
+  try {
+    const image = await new Promise((resolve, reject) => {
+      const img = new Image();
+      img.decoding = "async";
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error("长图渲染失败。"));
+      img.src = svgUrl;
+    });
+
+    const pixelLimit = 12000000;
+    const basePixels = width * height;
+    const scale = Math.max(1, Math.min(2, Math.sqrt(pixelLimit / Math.max(basePixels, 1))));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(width * scale));
+    canvas.height = Math.max(1, Math.round(height * scale));
+
+    const context = canvas.getContext("2d");
+    if (!context) {
+      throw new Error("当前浏览器不支持图片导出。");
+    }
+
+    context.setTransform(scale, 0, 0, scale, 0, 0);
+    context.drawImage(image, 0, 0);
+
+    const blob = await new Promise((resolve, reject) => {
+      canvas.toBlob((result) => {
+        if (result) {
+          resolve(result);
+          return;
+        }
+        reject(new Error("长图导出失败。"));
+      }, "image/png");
+    });
+
+    return blob;
+  } finally {
+    URL.revokeObjectURL(svgUrl);
+  }
+}
+
+async function exportLongImage() {
+  if (!state.article) return;
+  const blob = await renderPrintablePreviewImageBlob();
+  const fileName = getExportFileName("png");
+  const file = new File([blob], fileName, { type: "image/png" });
+
+  if (navigator.canShare?.({ files: [file] }) && navigator.share) {
+    try {
+      await navigator.share({
+        files: [file],
+        title: state.article.title,
+        text: `${state.article.title} 长图`
+      });
+      return;
+    } catch (error) {
+      if (error?.name === "AbortError") {
+        return;
+      }
+    }
+  }
+
+  const blobUrl = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = blobUrl;
+  link.download = fileName;
+  link.rel = "noopener";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+}
+
+async function handlePrimaryExport() {
+  if (shouldUseImageExport()) {
+    await exportLongImage();
+    return;
+  }
+  downloadPdf();
+}
+
+function syncExportButtonLabels() {
+  const downloadButton = document.getElementById("downloadPdfButton");
+  const previewButton = document.getElementById("previewPdfButton");
+  if (downloadButton) {
+    downloadButton.textContent = shouldUseImageExport() ? "保存长图" : "下载PDF";
+  }
+  if (previewButton) {
+    previewButton.textContent = shouldUseImageExport() ? "查看长图效果" : "查看PDF效果";
+  }
+}
+
 function renderPreviewSnapshot() {
   const host = document.getElementById("previewSnapshot");
   host.innerHTML = "";
@@ -812,6 +974,7 @@ function render() {
   renderSupplementSections();
   renderPreviewSnapshot();
   renderStatus();
+  syncExportButtonLabels();
   renderAnnotationLayer();
 }
 
@@ -825,7 +988,13 @@ function startReaderApp() {
   bindNoteNavigation();
   bindAnnotationTools();
 
-  document.getElementById("downloadPdfButton").addEventListener("click", downloadPdf);
+  document.getElementById("downloadPdfButton").addEventListener("click", async () => {
+    try {
+      await handlePrimaryExport();
+    } catch (error) {
+      window.alert(error.message || "导出失败，请稍后重试。");
+    }
+  });
   document.getElementById("previewPdfButton").addEventListener("click", openPreviewDialog);
   document.getElementById("closeDialogButton").addEventListener("click", () => {
     document.getElementById("pdfDialog").close();
@@ -834,7 +1003,7 @@ function startReaderApp() {
     document.getElementById("annotationHelpDialog").close();
   });
 
-  window.addEventListener("resize", renderAnnotationLayer);
+  window.addEventListener("resize", render);
   const initial = getInitialQuery();
   if (initial.title) {
     document.getElementById("searchTitle").value = initial.title;
