@@ -20,7 +20,11 @@ const toggleTargets = {
   toggleNotes: "notesSection",
   togglePinyin: "articleCanvas"
 };
+const annotationHelpStorageKey = "poem_annotation_help_seen_v1";
 let activeStroke = null;
+let activeStrokePointerId = null;
+const touchPointers = new Map();
+let touchPanState = null;
 
 function escapeSvg(value) {
   return String(value)
@@ -84,7 +88,36 @@ function createArticleCell(unit) {
 function resetAnnotations() {
   state.annotations = [];
   activeStroke = null;
+  activeStrokePointerId = null;
   renderAnnotationLayer();
+}
+
+function isMobileViewport() {
+  return window.matchMedia("(max-width: 820px)").matches;
+}
+
+function rememberAnnotationHelpShown() {
+  try {
+    window.localStorage.setItem(annotationHelpStorageKey, "1");
+  } catch (error) {
+    console.warn("Failed to persist annotation help state.", error);
+  }
+}
+
+function maybeShowAnnotationHelp() {
+  if (!isMobileViewport()) return;
+  try {
+    if (window.localStorage.getItem(annotationHelpStorageKey) === "1") {
+      return;
+    }
+  } catch (error) {
+    console.warn("Failed to read annotation help state.", error);
+  }
+
+  const dialog = document.getElementById("annotationHelpDialog");
+  if (!dialog || dialog.open) return;
+  rememberAnnotationHelpShown();
+  dialog.showModal();
 }
 
 function createNoteGaps(unit) {
@@ -368,11 +401,12 @@ function renderAnnotationLayer() {
   if (!stage || !layer || !modeButton || !eraserButton || !clearButton) return;
 
   syncAnnotationLayerSize();
-  stage.classList.toggle("annotation-active", state.annotationMode || state.eraserMode);
+  stage.classList.toggle("annotation-active", state.annotationMode);
+  document.body.classList.toggle("mobile-annotation-focus", isMobileViewport() && state.annotationMode);
   modeButton.classList.toggle("is-active", state.annotationMode);
-  eraserButton.classList.toggle("is-active", state.eraserMode);
+  eraserButton.classList.toggle("is-active", state.annotationMode && state.eraserMode);
   modeButton.textContent = state.annotationMode ? "退出批注" : "批注模式";
-  eraserButton.textContent = state.eraserMode ? "退出橡皮擦" : "橡皮擦";
+  eraserButton.textContent = state.annotationMode && state.eraserMode ? "退出橡皮擦" : "橡皮擦";
   clearButton.disabled = state.annotations.length === 0;
 
   layer.innerHTML = state.annotations
@@ -495,6 +529,64 @@ function eventPointInLayer(event) {
   };
 }
 
+function isTouchAnnotationEvent(event) {
+  return event.pointerType === "touch" && isMobileViewport() && state.annotationMode;
+}
+
+function updateTouchPointer(event) {
+  touchPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+}
+
+function removeTouchPointer(pointerId) {
+  touchPointers.delete(pointerId);
+  if (touchPointers.size < 2) {
+    touchPanState = null;
+  }
+}
+
+function cancelActiveStroke(discard = false) {
+  if (!activeStroke) return;
+  if (discard) {
+    state.annotations = state.annotations.filter((stroke) => stroke !== activeStroke);
+    renderAnnotationLayer();
+  }
+  activeStroke = null;
+  activeStrokePointerId = null;
+}
+
+function getTwoFingerMidpoint() {
+  const [first, second] = Array.from(touchPointers.values());
+  if (!first || !second) return null;
+  return {
+    x: (first.x + second.x) / 2,
+    y: (first.y + second.y) / 2
+  };
+}
+
+function beginTouchPan() {
+  const midpoint = getTwoFingerMidpoint();
+  if (!midpoint) return;
+  cancelActiveStroke(true);
+  touchPanState = {
+    midpoint,
+    scrollX: window.scrollX,
+    scrollY: window.scrollY
+  };
+}
+
+function updateTouchPan() {
+  if (!touchPanState || touchPointers.size < 2) return;
+  const midpoint = getTwoFingerMidpoint();
+  if (!midpoint) return;
+  const deltaX = midpoint.x - touchPanState.midpoint.x;
+  const deltaY = midpoint.y - touchPanState.midpoint.y;
+  window.scrollTo({
+    left: touchPanState.scrollX - deltaX,
+    top: touchPanState.scrollY - deltaY,
+    behavior: "auto"
+  });
+}
+
 function bindAnnotationTools() {
   const modeButton = document.getElementById("annotationModeButton");
   const eraserButton = document.getElementById("eraserModeButton");
@@ -507,17 +599,23 @@ function bindAnnotationTools() {
     state.annotationMode = !state.annotationMode;
     if (state.annotationMode) {
       state.eraserMode = false;
+      maybeShowAnnotationHelp();
+    } else {
+      state.eraserMode = false;
     }
-    activeStroke = null;
+    cancelActiveStroke();
+    touchPointers.clear();
+    touchPanState = null;
     renderAnnotationLayer();
   });
 
   eraserButton.addEventListener("click", () => {
-    state.eraserMode = !state.eraserMode;
-    if (state.eraserMode) {
-      state.annotationMode = false;
+    if (!state.annotationMode) {
+      state.annotationMode = true;
+      maybeShowAnnotationHelp();
     }
-    activeStroke = null;
+    state.eraserMode = !state.eraserMode;
+    cancelActiveStroke();
     renderAnnotationLayer();
   });
 
@@ -535,7 +633,16 @@ function bindAnnotationTools() {
 
   layer.addEventListener("pointerdown", (event) => {
     if (!state.article) return;
-    if (state.eraserMode) {
+    if (isTouchAnnotationEvent(event)) {
+      updateTouchPointer(event);
+      layer.setPointerCapture(event.pointerId);
+      if (touchPointers.size >= 2) {
+        event.preventDefault();
+        beginTouchPan();
+        return;
+      }
+    }
+    if (state.annotationMode && state.eraserMode) {
       const targetPath = event.target.closest(".annotation-path");
       if (!targetPath) return;
       event.preventDefault();
@@ -554,13 +661,22 @@ function bindAnnotationTools() {
       width: state.annotationWidth,
       points: [point]
     };
+    activeStrokePointerId = event.pointerId;
     state.annotations = [...state.annotations, activeStroke];
     layer.setPointerCapture(event.pointerId);
     renderAnnotationLayer();
   });
 
   layer.addEventListener("pointermove", (event) => {
-    if (!state.annotationMode || !activeStroke) return;
+    if (isTouchAnnotationEvent(event) && touchPointers.has(event.pointerId)) {
+      updateTouchPointer(event);
+      if (touchPointers.size >= 2) {
+        event.preventDefault();
+        updateTouchPan();
+        return;
+      }
+    }
+    if (!state.annotationMode || !activeStroke || event.pointerId !== activeStrokePointerId) return;
     event.preventDefault();
     const point = eventPointInLayer(event);
     if (!point) return;
@@ -569,15 +685,27 @@ function bindAnnotationTools() {
   });
 
   function finishStroke(event) {
-    if (!activeStroke) return;
+    if (isTouchAnnotationEvent(event)) {
+      removeTouchPointer(event.pointerId);
+    }
     if (event.pointerId !== undefined && layer.hasPointerCapture(event.pointerId)) {
       layer.releasePointerCapture(event.pointerId);
     }
-    activeStroke = null;
+    if (event.pointerId === activeStrokePointerId) {
+      cancelActiveStroke();
+    }
   }
 
   layer.addEventListener("pointerup", finishStroke);
   layer.addEventListener("pointercancel", finishStroke);
+  layer.addEventListener("lostpointercapture", (event) => {
+    if (isTouchAnnotationEvent(event)) {
+      removeTouchPointer(event.pointerId);
+    }
+    if (event.pointerId === activeStrokePointerId) {
+      cancelActiveStroke();
+    }
+  });
 }
 
 function bindToolbarJumpButtons() {
@@ -669,6 +797,9 @@ function startReaderApp() {
   document.getElementById("previewPdfButton").addEventListener("click", openPreviewDialog);
   document.getElementById("closeDialogButton").addEventListener("click", () => {
     document.getElementById("pdfDialog").close();
+  });
+  document.getElementById("annotationHelpConfirmButton").addEventListener("click", () => {
+    document.getElementById("annotationHelpDialog").close();
   });
 
   window.addEventListener("resize", renderAnnotationLayer);

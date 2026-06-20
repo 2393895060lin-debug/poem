@@ -786,6 +786,12 @@ body {
   font-family: "Source Han Sans SC", "PingFang SC", sans-serif;
 }
 
+.annotation-detail-tools {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .annotation-mode-button,
 .annotation-clear-button {
   height: 28px;
@@ -844,14 +850,15 @@ body {
   display: inline-flex;
   align-items: center;
   height: 28px;
-  padding: 0 12px;
+  padding: 0 9px;
   border: 1px solid rgba(150, 140, 112, 0.56);
   border-radius: 999px;
   background: rgba(255, 251, 240, 0.86);
   color: #4d534f;
   text-decoration: none;
   font-family: "Source Han Sans SC", "PingFang SC", sans-serif;
-  font-size: 13px;
+  font-size: 12px;
+  white-space: nowrap;
 }
 
 .back-home-link:hover {
@@ -898,6 +905,49 @@ body {
   padding: 24px;
   background:
     linear-gradient(180deg, rgba(248, 245, 234, 0.96), rgba(240, 234, 216, 0.9));
+}
+
+.annotation-help-dialog {
+  width: min(360px, calc(100vw - 28px));
+  border: none;
+  padding: 0;
+  background: transparent;
+}
+
+.annotation-help-dialog::backdrop {
+  background: rgba(37, 39, 31, 0.28);
+}
+
+.annotation-help-card {
+  padding: 22px 20px 18px;
+  border-radius: 20px;
+  background: linear-gradient(180deg, rgba(250, 247, 236, 0.98), rgba(244, 239, 223, 0.96));
+  box-shadow: 0 24px 50px rgba(52, 44, 28, 0.22);
+  text-align: center;
+}
+
+.annotation-help-title {
+  font-family: "Source Han Sans SC", "PingFang SC", sans-serif;
+  font-size: 18px;
+  color: #3d433f;
+}
+
+.annotation-help-copy {
+  margin: 10px 0 16px;
+  font-size: 14px;
+  line-height: 1.7;
+  color: #5d645d;
+}
+
+.annotation-help-button {
+  min-width: 112px;
+  height: 38px;
+  border: none;
+  border-radius: 999px;
+  background: rgba(109, 110, 81, 0.94);
+  color: #fffef7;
+  font-size: 14px;
+  cursor: pointer;
 }
 
 .print-preview-sheet {
@@ -980,6 +1030,10 @@ body {
     border-left: none;
   }
 
+  .annotation-detail-tools {
+    flex-wrap: wrap;
+  }
+
   .workspace {
     grid-template-columns: 1fr;
   }
@@ -1005,10 +1059,13 @@ body {
   }
 
   .top-toolbar {
-    position: static;
+    position: sticky;
+    top: 0;
+    z-index: 40;
     padding: 10px 14px 12px;
     gap: 8px 10px;
     align-items: flex-start;
+    box-shadow: 0 8px 20px rgba(83, 74, 48, 0.08);
   }
 
   .workspace {
@@ -1027,24 +1084,41 @@ body {
   }
 
   .control-panel {
-    order: -1;
-    display: grid;
-    gap: 12px;
-    padding: 0 0 24px;
-  }
-
-  .query-card,
-  .preview-frame {
-    margin-bottom: 0;
+    display: contents;
   }
 
   .query-card {
+    order: 0;
+    margin-bottom: 0;
     box-shadow: 0 14px 30px rgba(83, 74, 48, 0.1);
   }
 
-  .preview-frame {
+  .reader-panel {
+    order: 1;
+  }
+
+  .panel-divider {
+    order: 2;
+  }
+
+  .action-button-primary {
+    order: 3;
+  }
+
+  .action-button-secondary {
     order: 4;
+    margin-top: 0;
+  }
+
+  .preview-frame {
+    order: 5;
     padding: 14px;
+    margin-bottom: 0;
+  }
+
+  .panel-divider {
+    margin-top: 22px;
+    font-size: 20px;
   }
 
   .preview-paper {
@@ -1052,22 +1126,32 @@ body {
     margin: 0 auto;
   }
 
-  .action-button-primary {
-    order: 2;
+  body.mobile-annotation-focus .top-toolbar {
+    gap: 8px;
   }
 
-  .action-button-secondary {
-    order: 3;
-    margin-top: 0;
+  body.mobile-annotation-focus .back-home-link,
+  body.mobile-annotation-focus .query-status,
+  body.mobile-annotation-focus .toggle-row-compact {
+    display: none;
   }
 
-  .panel-divider {
-    order: 5;
+  body.mobile-annotation-focus .annotation-tools {
+    width: 100%;
+    margin-left: 0;
+    padding-left: 0;
+    border-left: none;
   }
 
-  .panel-divider {
-    margin-top: 22px;
-    font-size: 20px;
+  .annotation-detail-tools {
+    display: none;
+    width: 100%;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  body.mobile-annotation-focus .annotation-detail-tools {
+    display: inline-flex;
   }
 }
 
@@ -1081,6 +1165,8 @@ body {
 
   .back-home-link {
     min-height: 32px;
+    padding-left: 8px;
+    padding-right: 8px;
   }
 
   .toggle-row-compact {
@@ -1099,6 +1185,12 @@ body {
     gap: 8px;
     padding-top: 4px;
     border-top: 1px solid rgba(190, 182, 156, 0.52);
+  }
+
+  body.mobile-annotation-focus .annotation-tools {
+    gap: 8px;
+    padding-top: 0;
+    border-top: none;
   }
 
   .annotation-mode-button,
@@ -1256,8 +1348,8 @@ body {
   .annotation-mode-button,
   .annotation-clear-button {
     font-size: 12px;
-    padding-left: 10px;
-    padding-right: 10px;
+    padding-left: 8px;
+    padding-right: 8px;
   }
 
   .title-cell,

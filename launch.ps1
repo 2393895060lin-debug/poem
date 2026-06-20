@@ -6,6 +6,7 @@ $logDir = Join-Path $poemDataDir "logs"
 $pycacheDir = Join-Path $poemDataDir "pycache"
 $stdoutLog = Join-Path $logDir "server.stdout.log"
 $stderrLog = Join-Path $logDir "server.stderr.log"
+$serverScriptName = [System.IO.Path]::GetFileName($serverScript)
 
 function Get-FreePort {
     $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
@@ -30,20 +31,26 @@ $port = $preferredPort
 $url = "http://127.0.0.1:$port/"
 
 Get-CimInstance Win32_Process |
-    Where-Object { $_.Name -eq "python.exe" -and $_.CommandLine -like "*$serverScript*" } |
+    Where-Object {
+        $_.Name -eq "python.exe" -and (
+            $_.CommandLine -like "*$serverScript*" -or
+            $_.CommandLine -like "*$serverScriptName*"
+        )
+    } |
     ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 
 $existing = Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue |
     Select-Object -First 1 -ExpandProperty OwningProcess
 if ($existing) {
     $commandLine = (Get-CimInstance Win32_Process -Filter "ProcessId = $existing").CommandLine
-    if ($commandLine -notlike "*$serverScript*") {
+    if ($commandLine -notlike "*$serverScript*" -and $commandLine -notlike "*$serverScriptName*") {
         $port = Get-FreePort
         $url = "http://127.0.0.1:$port/"
     }
 }
 
 $env:POEM_UI_PORT = "$port"
+$env:POEM_UI_HOST = "0.0.0.0"
 $env:POEM_DATA_DIR = $poemDataDir
 $env:PYTHONPYCACHEPREFIX = $pycacheDir
 

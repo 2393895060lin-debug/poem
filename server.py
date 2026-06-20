@@ -1621,7 +1621,7 @@ class AppHandler(SimpleHTTPRequestHandler):
 
 
 def main():
-    host = os.getenv("POEM_UI_HOST", "127.0.0.1").strip() or "127.0.0.1"
+    host = os.getenv("POEM_UI_HOST", "0.0.0.0").strip() or "0.0.0.0"
     port = int(os.getenv("PORT") or os.getenv("POEM_UI_PORT", "8765"))
     ensure_enrichment_worker()
     server = ThreadingHTTPServer((host, port), AppHandler)
