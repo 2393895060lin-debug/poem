@@ -31,6 +31,10 @@ body {
   overflow-y: auto;
 }
 
+body.mobile-annotation-focus {
+  overscroll-behavior: none;
+}
+
 .page-shell {
   min-height: 100vh;
   display: grid;
