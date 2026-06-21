@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import html
+import io
 import json
 import os
 import re
@@ -9,6 +10,7 @@ import secrets
 import sys
 import threading
 import time
+from functools import lru_cache
 from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -18,6 +20,7 @@ from datetime import datetime
 from urllib.parse import parse_qs, quote, urlparse
 from urllib.request import Request, urlopen
 
+from PIL import Image, ImageDraw, ImageFont
 from pypinyin import Style, pinyin
 from runtime_paths import (
     AUTO_SUPPLEMENT_CACHE_PATH,
@@ -94,6 +97,25 @@ POPULAR_WORK_SCORES = {
 }
 verified_human_tokens: dict[str, float] = {}
 verified_human_tokens_lock = threading.Lock()
+PUNCTUATION_MARKS = {"，", "。", "；", "：", "？", "！", "“", "”", "〔", "〕", "（", "）", "《", "》", "、"}
+INLINE_SYMBOLS = {"〔", "〕", "（", "）", "《", "》", "[", "]", "【", "】"}
+EXPORT_FONT_PATH_CANDIDATES = {
+    "regular": [
+        Path(os.getenv("POEM_EXPORT_FONT_PATH", "")).expanduser() if os.getenv("POEM_EXPORT_FONT_PATH") else None,
+        Path(r"C:\Windows\Fonts\msyh.ttc"),
+        Path(r"C:\Windows\Fonts\simhei.ttf"),
+        Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
+        Path("/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc"),
+    ],
+    "bold": [
+        Path(os.getenv("POEM_EXPORT_FONT_BOLD_PATH", "")).expanduser() if os.getenv("POEM_EXPORT_FONT_BOLD_PATH") else None,
+        Path(r"C:\Windows\Fonts\msyhbd.ttc"),
+        Path(r"C:\Windows\Fonts\msyh.ttc"),
+        Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"),
+        Path("/usr/share/fonts/opentype/noto/NotoSerifCJK-Bold.ttc"),
+        Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
+    ],
+}
 
 
 def prune_verified_human_tokens(now: float | None = None) -> None:
@@ -1422,6 +1444,371 @@ def build_translation_references(title: str, author: str):
     ]
 
 
+def parse_flag(value: str | None, default: bool = False) -> bool:
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def sanitize_download_name(value: str) -> str:
+    cleaned = re.sub(r'[\\/:*?"<>|]+', "-", value).strip()
+    return cleaned or "古诗文排版"
+
+
+@lru_cache(maxsize=None)
+def resolve_export_font_path(weight: str) -> Path:
+    candidates = EXPORT_FONT_PATH_CANDIDATES.get(weight, EXPORT_FONT_PATH_CANDIDATES["regular"])
+    for candidate in candidates:
+        if candidate and candidate.exists():
+            return candidate
+    raise RuntimeError("服务端未找到可用的中文字体，无法生成长图。")
+
+
+@lru_cache(maxsize=None)
+def load_export_font(size: int, weight: str = "regular") -> ImageFont.FreeTypeFont:
+    font_path = resolve_export_font_path(weight)
+    return ImageFont.truetype(str(font_path), size=size)
+
+
+def measure_text(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont) -> tuple[int, int]:
+    sample = text if text else "国"
+    left, top, right, bottom = draw.textbbox((0, 0), sample, font=font)
+    return right - left, bottom - top
+
+
+def wrap_export_text(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont, max_width: int) -> list[str]:
+    normalized = re.sub(r"\s+", " ", text or "").strip()
+    if not normalized:
+        return []
+
+    lines: list[str] = []
+    current = ""
+    for char in normalized:
+        candidate = f"{current}{char}"
+        width, _ = measure_text(draw, candidate, font)
+        if current and width > max_width:
+            lines.append(current)
+            current = char
+        else:
+            current = candidate
+    if current:
+        lines.append(current)
+    return lines
+
+
+def should_hide_pinyin_for_export(char: str) -> bool:
+    return char in PUNCTUATION_MARKS or char in INLINE_SYMBOLS
+
+
+def build_export_note_paragraphs(payload: dict) -> list[str]:
+    groups = payload.get("noteGroups", [])
+    if not groups:
+        return []
+
+    paragraphs: list[str] = []
+    show_group_labels = len(groups) > 1
+    for group in groups:
+        if show_group_labels and group.get("label"):
+            paragraphs.append(f"【{group['label']}】")
+        for item in group.get("items", []):
+            index = item.get("index")
+            prefix = f"{index}. " if index else ""
+            term = str(item.get("term", "")).strip()
+            text = str(item.get("text", "")).strip()
+            body = f"{term}：{text}" if term and text else term or text
+            if body:
+                paragraphs.append(f"{prefix}{body}")
+    return paragraphs
+
+
+def render_export_image_png(payload: dict, *, show_translation: bool, show_notes: bool, show_pinyin: bool) -> bytes:
+    page_width = 1600
+    outer_padding = 44
+    sheet_padding_x = 52
+    sheet_padding_y = 56
+    sheet_width = page_width - outer_padding * 2
+    sheet_left = outer_padding
+    sheet_right = sheet_left + sheet_width
+    content_width = sheet_width - sheet_padding_x * 2
+
+    page_background = (246, 242, 226)
+    sheet_background = (255, 252, 244)
+    frame_line = (222, 216, 198)
+    cell_fill = (255, 253, 248)
+    cell_line = (230, 223, 206)
+    primary_text = (37, 33, 28)
+    secondary_text = (110, 102, 84)
+    accent_text = (124, 121, 88)
+    note_accent = (200, 76, 49)
+
+    title_font = load_export_font(68, "bold")
+    author_font = load_export_font(54, "bold")
+    title_pinyin_font = load_export_font(26)
+    pinyin_font = load_export_font(24)
+    glyph_font = load_export_font(52, "bold")
+    heading_font = load_export_font(40, "bold")
+    body_font = load_export_font(32)
+    note_badge_font = load_export_font(18, "bold")
+
+    title_cell = 116
+    title_gap = 12
+    author_cell = 92
+    author_gap = 10
+    cell_width = 106
+    cell_gap = 8
+    pinyin_height = 28 if show_pinyin else 0
+    glyph_height = 68
+    cell_height = pinyin_height + glyph_height + 18
+    line_gap = 18
+    section_gap = 28
+    paragraph_gap = 14
+    paragraph_line_gap = 12
+    card_padding = 28
+    divider_gap = 26
+    max_columns = max(4, (content_width + cell_gap) // (cell_width + cell_gap))
+
+    preview_title = payload.get("title") or "古诗文排版"
+    preview_author = payload.get("author") or "佚名"
+    preview_dynasty = payload.get("dynasty") or ""
+    author_meta = f"{preview_author} [{preview_dynasty}]" if preview_dynasty else preview_author
+
+    supplement_sections: list[tuple[str, list[str]]] = []
+    if show_translation and payload.get("translation"):
+        supplement_sections.append(("译文", [str(item).strip() for item in payload.get("translation", []) if str(item).strip()]))
+    if show_notes:
+        note_paragraphs = build_export_note_paragraphs(payload)
+        if note_paragraphs:
+            supplement_sections.append(("注释", note_paragraphs))
+
+    def draw_note_badge(draw: ImageDraw.ImageDraw, x: float, y: float, label: str, paint: bool) -> None:
+        text_width, text_height = measure_text(draw, label, note_badge_font)
+        badge_width = max(28, text_width + 12)
+        badge_height = max(24, text_height + 6)
+        if not paint:
+            return
+        draw.rounded_rectangle(
+            [x - badge_width, y, x, y + badge_height],
+            radius=badge_height / 2,
+            fill=note_accent,
+        )
+        draw.text(
+            (x - badge_width / 2, y + badge_height / 2),
+            label,
+            font=note_badge_font,
+            fill=(255, 255, 255),
+            anchor="mm",
+        )
+
+    def paint_sheet(draw: ImageDraw.ImageDraw, paint: bool, final_height: int | None = None) -> int:
+        current_y = outer_padding
+        sheet_top = current_y
+        sheet_bottom_placeholder = (final_height - outer_padding) if final_height else (current_y + 1200)
+        if paint:
+            draw.rounded_rectangle(
+                [sheet_left, sheet_top, sheet_right, sheet_bottom_placeholder],
+                radius=30,
+                fill=sheet_background,
+                outline=frame_line,
+                width=3,
+            )
+        current_y += sheet_padding_y
+
+        title_chars = list(preview_title)
+        title_row_width = len(title_chars) * title_cell + max(0, len(title_chars) - 1) * title_gap
+        title_start_x = sheet_left + (sheet_width - title_row_width) / 2
+        title_box_top = current_y
+
+        for index, char in enumerate(title_chars):
+            cell_x = title_start_x + index * (title_cell + title_gap)
+            if paint:
+                draw.rounded_rectangle(
+                    [cell_x, title_box_top, cell_x + title_cell, title_box_top + title_cell],
+                    radius=8,
+                    fill=cell_fill,
+                    outline=cell_line,
+                    width=2,
+                )
+                draw.text(
+                    (cell_x + title_cell / 2, title_box_top + title_cell / 2 + 2),
+                    char,
+                    font=title_font,
+                    fill=primary_text,
+                    anchor="mm",
+                )
+        current_y += title_cell + 26
+
+        author_pinyin_values = payload.get("authorPinyin", [])
+        author_display_values = payload.get("authorDisplay", [])
+        if author_pinyin_values:
+            current_x = sheet_left + (sheet_width / 2)
+            author_row_width = len(author_display_values) * author_cell + max(0, len(author_display_values) - 1) * author_gap
+            author_start_x = current_x - author_row_width / 2
+
+            for index, py in enumerate(author_pinyin_values):
+                if not py or py in INLINE_SYMBOLS:
+                    continue
+                cell_x = author_start_x + index * (author_cell + author_gap)
+                if paint:
+                    draw.text(
+                        (cell_x + author_cell / 2, current_y),
+                        py,
+                        font=title_pinyin_font,
+                        fill=secondary_text,
+                        anchor="ma",
+                    )
+            current_y += 38
+
+            for index, char in enumerate(author_display_values):
+                cell_x = author_start_x + index * (author_cell + author_gap)
+                if paint:
+                    draw.rounded_rectangle(
+                        [cell_x, current_y, cell_x + author_cell, current_y + author_cell],
+                        radius=8,
+                        fill=cell_fill,
+                        outline=cell_line,
+                        width=2,
+                    )
+                    draw.text(
+                        (cell_x + author_cell / 2, current_y + author_cell / 2 + 1),
+                        char,
+                        font=author_font,
+                        fill=primary_text,
+                        anchor="mm",
+                    )
+            current_y += author_cell + 34
+
+        divider_y = current_y
+        if paint:
+            draw.line(
+                [(sheet_left + sheet_padding_x, divider_y), (sheet_right - sheet_padding_x, divider_y)],
+                fill=frame_line,
+                width=4,
+            )
+        current_y += divider_gap
+
+        for logical_line in payload.get("lines", []):
+            line_units = list(logical_line or [])
+            if not line_units:
+                continue
+            start = 0
+            while start < len(line_units):
+                row_units = line_units[start:start + max_columns]
+                row_width = len(row_units) * cell_width + max(0, len(row_units) - 1) * cell_gap
+                row_start_x = sheet_left + sheet_padding_x + (content_width - row_width) / 2
+
+                for index, unit in enumerate(row_units):
+                    cell_x = row_start_x + index * (cell_width + cell_gap)
+                    cell_y = current_y
+                    if paint:
+                        draw.rounded_rectangle(
+                            [cell_x, cell_y, cell_x + cell_width, cell_y + cell_height],
+                            radius=8,
+                            fill=cell_fill,
+                            outline=cell_line,
+                            width=2,
+                        )
+                    if show_pinyin:
+                        py = "" if should_hide_pinyin_for_export(unit.get("char", "")) else str(unit.get("pinyin", ""))
+                        if py and paint:
+                            draw.text(
+                                (cell_x + cell_width / 2, cell_y + 12),
+                                py,
+                                font=pinyin_font,
+                                fill=secondary_text,
+                                anchor="ma",
+                            )
+                    if paint:
+                        draw.text(
+                            (cell_x + cell_width / 2, cell_y + pinyin_height + glyph_height / 2 + 10),
+                            str(unit.get("char", "")),
+                            font=glyph_font,
+                            fill=primary_text,
+                            anchor="mm",
+                        )
+                    note_numbers = [str(item) for item in unit.get("noteNumbers", []) if str(item).strip()]
+                    if show_notes and note_numbers:
+                        draw_note_badge(draw, cell_x + cell_width - 6, cell_y + 6, note_numbers[0], paint)
+                current_y += cell_height + line_gap
+                start += max_columns
+            current_y += 10
+
+        current_y += 10
+
+        for section_title, paragraphs in supplement_sections:
+            wrapped_paragraphs = [wrap_export_text(draw, paragraph, body_font, content_width - card_padding * 2) for paragraph in paragraphs]
+            body_line_height = measure_text(draw, "示例", body_font)[1] + paragraph_line_gap
+            heading_height = measure_text(draw, section_title, heading_font)[1]
+            paragraph_height = sum(len(lines) * body_line_height + paragraph_gap for lines in wrapped_paragraphs if lines)
+            if paragraph_height:
+                paragraph_height -= paragraph_gap
+            card_height = card_padding * 2 + heading_height + 18 + paragraph_height
+            card_top = current_y
+            card_bottom = card_top + card_height
+
+            if paint:
+                draw.rounded_rectangle(
+                    [sheet_left + sheet_padding_x, card_top, sheet_right - sheet_padding_x, card_bottom],
+                    radius=24,
+                    fill=(255, 250, 240),
+                    outline=frame_line,
+                    width=2,
+                )
+                draw.text(
+                    (sheet_left + sheet_padding_x + card_padding, card_top + card_padding),
+                    section_title,
+                    font=heading_font,
+                    fill=accent_text,
+                    anchor="la",
+                )
+
+            paragraph_y = card_top + card_padding + heading_height + 18
+            for lines in wrapped_paragraphs:
+                for wrapped_line in lines:
+                    if paint:
+                        draw.text(
+                            (sheet_left + sheet_padding_x + card_padding, paragraph_y),
+                            wrapped_line,
+                            font=body_font,
+                            fill=primary_text,
+                            anchor="la",
+                        )
+                    paragraph_y += body_line_height
+                paragraph_y += paragraph_gap
+
+            current_y = card_bottom + section_gap
+
+        current_y += 12
+        sheet_bottom = current_y + sheet_padding_y - 12
+
+        if paint:
+            draw.rounded_rectangle(
+                [sheet_left, sheet_top, sheet_right, sheet_bottom],
+                radius=30,
+                outline=(255, 255, 255),
+                width=1,
+            )
+            draw.text(
+                (sheet_left + sheet_padding_x, sheet_bottom - 24),
+                f"排版预览 · {author_meta}",
+                font=title_pinyin_font,
+                fill=secondary_text,
+                anchor="ld",
+            )
+        return sheet_bottom + outer_padding
+
+    measuring_canvas = Image.new("RGB", (page_width, 64), page_background)
+    measuring_draw = ImageDraw.Draw(measuring_canvas)
+    image_height = max(900, paint_sheet(measuring_draw, paint=False))
+
+    image = Image.new("RGB", (page_width, image_height), page_background)
+    draw = ImageDraw.Draw(image)
+    paint_sheet(draw, paint=True, final_height=image_height)
+
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG", optimize=True)
+    return buffer.getvalue()
+
+
 def build_payload(title: str, author: str = "", wait_for_enrichment: bool = False, force_refresh: bool = False, _sync_attempted: bool = False):
     resolved_title = resolve_known_title_alias(title)
     try:
@@ -1549,6 +1936,12 @@ class AppHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/human-status":
             self.handle_human_status()
             return
+        if parsed.path == "/api/export-image":
+            if not self.request_is_human_verified():
+                self.write_json({"error": "请先完成人机验证。"}, HTTPStatus.FORBIDDEN)
+                return
+            self.handle_export_image(parsed)
+            return
         if parsed.path == "/api/lookup":
             if not self.request_is_human_verified():
                 self.write_json({"error": "请先完成人机验证。"}, HTTPStatus.FORBIDDEN)
@@ -1604,6 +1997,40 @@ class AppHandler(SimpleHTTPRequestHandler):
 
         self.write_json(payload, HTTPStatus.OK)
 
+    def handle_export_image(self, parsed):
+        params = parse_qs(parsed.query)
+        title = params.get("title", [""])[0].strip()
+        author = params.get("author", [""])[0].strip()
+        show_translation = parse_flag(params.get("showTranslation", [None])[0], default=False)
+        show_notes = parse_flag(params.get("showNotes", [None])[0], default=False)
+        show_pinyin = parse_flag(params.get("showPinyin", [None])[0], default=True)
+
+        if not title:
+            self.write_json({"error": "请输入题目。"}, HTTPStatus.BAD_REQUEST)
+            return
+
+        try:
+            payload = build_payload(title, author)
+            image_bytes = render_export_image_png(
+                payload,
+                show_translation=show_translation,
+                show_notes=show_notes,
+                show_pinyin=show_pinyin,
+            )
+        except Exception as exc:
+            self.write_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+
+        file_name = sanitize_download_name(payload.get("title") or title)
+        self.write_binary(
+            image_bytes,
+            "image/png",
+            HTTPStatus.OK,
+            extra_headers={
+                "Content-Disposition": f"attachment; filename*=UTF-8''{quote(file_name)}.png"
+            },
+        )
+
     def write_json(self, payload, status, extra_headers=None):
         raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
@@ -1614,6 +2041,15 @@ class AppHandler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
 
+    def write_binary(self, payload: bytes, content_type: str, status, extra_headers=None):
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(payload)))
+        for key, value in (extra_headers or {}).items():
+            self.send_header(key, value)
+        self.end_headers()
+        self.wfile.write(payload)
+
     def redirect(self, location: str):
         self.send_response(HTTPStatus.FOUND)
         self.send_header("Location", location)
@@ -1621,7 +2057,7 @@ class AppHandler(SimpleHTTPRequestHandler):
 
 
 def main():
-    host = os.getenv("POEM_UI_HOST", "127.0.0.1").strip() or "127.0.0.1"
+    host = os.getenv("POEM_UI_HOST", "0.0.0.0").strip() or "0.0.0.0"
     port = int(os.getenv("PORT") or os.getenv("POEM_UI_PORT", "8765"))
     ensure_enrichment_worker()
     server = ThreadingHTTPServer((host, port), AppHandler)

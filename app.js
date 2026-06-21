@@ -400,136 +400,83 @@ function getExportFileName(extension) {
   return `${baseName}.${extension}`;
 }
 
-function collectDocumentStyleText() {
-  return Array.from(document.styleSheets)
-    .map((sheet) => {
-      try {
-        return Array.from(sheet.cssRules || [])
-          .map((rule) => rule.cssText)
-          .join("\n");
-      } catch (error) {
-        return "";
-      }
-    })
-    .join("\n");
+function isAppleMobileDevice() {
+  const ua = navigator.userAgent || "";
+  return /iPhone|iPad|iPod/i.test(ua) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
 }
 
-function measurePrintablePreviewMarkup() {
-  const host = document.createElement("div");
-  host.style.position = "fixed";
-  host.style.left = "-99999px";
-  host.style.top = "0";
-  host.style.opacity = "0";
-  host.style.pointerEvents = "none";
-
-  const wrapper = document.createElement("div");
-  wrapper.style.display = "inline-block";
-  wrapper.style.padding = "24px";
-  wrapper.style.background = "linear-gradient(180deg, rgba(248, 245, 234, 0.96), rgba(240, 234, 216, 0.9))";
-
-  const sheet = buildPrintablePreview();
-  sheet.style.width = "720px";
-  sheet.style.maxWidth = "none";
-  sheet.style.margin = "0";
-
-  wrapper.appendChild(sheet);
-  host.appendChild(wrapper);
-  document.body.appendChild(host);
-
-  const width = Math.ceil(wrapper.scrollWidth);
-  const height = Math.ceil(wrapper.scrollHeight);
-  const markup = wrapper.outerHTML;
-  host.remove();
-  return { width, height, markup };
-}
-
-async function renderPrintablePreviewImageBlob() {
-  const { width, height, markup } = measurePrintablePreviewMarkup();
-  const stylesheet = collectDocumentStyleText();
-  const svgMarkup = `
-    <svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
-      <foreignObject width="100%" height="100%">
-        <div xmlns="http://www.w3.org/1999/xhtml">
-          <style>${stylesheet}</style>
-          ${markup}
-        </div>
-      </foreignObject>
-    </svg>
-  `;
-
-  const svgBlob = new Blob([svgMarkup], { type: "image/svg+xml;charset=utf-8" });
-  const svgUrl = URL.createObjectURL(svgBlob);
-
-  try {
-    const image = await new Promise((resolve, reject) => {
-      const img = new Image();
-      img.decoding = "async";
-      img.onload = () => resolve(img);
-      img.onerror = () => reject(new Error("长图渲染失败。"));
-      img.src = svgUrl;
-    });
-
-    const pixelLimit = 12000000;
-    const basePixels = width * height;
-    const scale = Math.max(1, Math.min(2, Math.sqrt(pixelLimit / Math.max(basePixels, 1))));
-    const canvas = document.createElement("canvas");
-    canvas.width = Math.max(1, Math.round(width * scale));
-    canvas.height = Math.max(1, Math.round(height * scale));
-
-    const context = canvas.getContext("2d");
-    if (!context) {
-      throw new Error("当前浏览器不支持图片导出。");
-    }
-
-    context.setTransform(scale, 0, 0, scale, 0, 0);
-    context.drawImage(image, 0, 0);
-
-    const blob = await new Promise((resolve, reject) => {
-      canvas.toBlob((result) => {
-        if (result) {
-          resolve(result);
-          return;
-        }
-        reject(new Error("长图导出失败。"));
-      }, "image/png");
-    });
-
-    return blob;
-  } finally {
-    URL.revokeObjectURL(svgUrl);
+function buildImageExportUrl() {
+  if (!state.article) {
+    return "";
   }
+  const params = new URLSearchParams({
+    title: state.article.title || "",
+    author: state.article.author || "",
+    showTranslation: state.showTranslation ? "1" : "0",
+    showNotes: state.showNotes ? "1" : "0",
+    showPinyin: state.showPinyin ? "1" : "0"
+  });
+  return `/api/export-image?${params.toString()}`;
+}
+
+async function fetchImageExportBlob() {
+  const exportUrl = buildImageExportUrl();
+  if (!exportUrl) {
+    throw new Error("还没有可导出的内容。");
+  }
+
+  const response = await fetch(exportUrl, {
+    credentials: "same-origin"
+  });
+
+  if (!response.ok) {
+    const contentType = response.headers.get("content-type") || "";
+    if (contentType.includes("application/json")) {
+      const payload = await response.json();
+      throw new Error(payload.error || "长图导出失败。");
+    }
+    throw new Error("长图导出失败，请稍后重试。");
+  }
+
+  return response.blob();
 }
 
 async function exportLongImage() {
   if (!state.article) return;
-  const blob = await renderPrintablePreviewImageBlob();
+  const exportUrl = buildImageExportUrl();
   const fileName = getExportFileName("png");
-  const file = new File([blob], fileName, { type: "image/png" });
+  const canUseFileShare = typeof navigator.share === "function" && typeof navigator.canShare === "function";
 
-  if (navigator.canShare?.({ files: [file] }) && navigator.share) {
-    try {
-      await navigator.share({
-        files: [file],
-        title: state.article.title,
-        text: `${state.article.title} 长图`
-      });
-      return;
-    } catch (error) {
-      if (error?.name === "AbortError") {
+  if (canUseFileShare) {
+    const blob = await fetchImageExportBlob();
+    const file = new File([blob], fileName, { type: blob.type || "image/png" });
+    if (navigator.canShare({ files: [file] })) {
+      try {
+        await navigator.share({
+          files: [file],
+          title: state.article.title,
+          text: `${state.article.title} 长图`
+        });
         return;
+      } catch (error) {
+        if (error?.name === "AbortError") {
+          return;
+        }
       }
     }
   }
 
-  const blobUrl = URL.createObjectURL(blob);
   const link = document.createElement("a");
-  link.href = blobUrl;
-  link.download = fileName;
+  link.href = exportUrl;
   link.rel = "noopener";
+  if (isAppleMobileDevice()) {
+    link.target = "_blank";
+  } else {
+    link.download = fileName;
+  }
   document.body.appendChild(link);
   link.click();
   link.remove();
-  setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
 }
 
 async function handlePrimaryExport() {
