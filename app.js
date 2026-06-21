@@ -26,6 +26,7 @@ let activeStrokePointerId = null;
 const touchPointers = new Map();
 let touchPanState = null;
 let removeMobileTouchGuards = null;
+let touchPanFrameId = 0;
 
 function escapeSvg(value) {
   return String(value)
@@ -542,7 +543,9 @@ function renderAnnotationLayer() {
 
   syncAnnotationLayerSize();
   stage.classList.toggle("annotation-active", state.annotationMode);
-  document.body.classList.toggle("mobile-annotation-focus", isMobileViewport() && state.annotationMode);
+  const mobileAnnotationFocus = isMobileViewport() && state.annotationMode;
+  document.body.classList.toggle("mobile-annotation-focus", mobileAnnotationFocus);
+  document.documentElement.classList.toggle("mobile-annotation-focus", mobileAnnotationFocus);
   syncMobileTouchGuards();
   modeButton.classList.toggle("is-active", state.annotationMode);
   eraserButton.classList.toggle("is-active", state.annotationMode && state.eraserMode);
@@ -674,14 +677,26 @@ function isTouchAnnotationEvent(event) {
   return event.pointerType === "touch" && isMobileViewport() && state.annotationMode;
 }
 
+function getViewportAdjustedTouchPoint(event) {
+  const viewport = window.visualViewport;
+  return {
+    x: event.clientX + (viewport?.offsetLeft || 0),
+    y: event.clientY + (viewport?.offsetTop || 0)
+  };
+}
+
 function updateTouchPointer(event) {
-  touchPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+  touchPointers.set(event.pointerId, getViewportAdjustedTouchPoint(event));
 }
 
 function removeTouchPointer(pointerId) {
   touchPointers.delete(pointerId);
   if (touchPointers.size < 2) {
     touchPanState = null;
+    if (touchPanFrameId) {
+      window.cancelAnimationFrame(touchPanFrameId);
+      touchPanFrameId = 0;
+    }
   }
 }
 
@@ -709,23 +724,30 @@ function beginTouchPan() {
   if (!midpoint) return;
   cancelActiveStroke(true);
   touchPanState = {
-    midpoint,
-    scrollX: window.scrollX,
-    scrollY: window.scrollY
+    midpoint
   };
 }
 
-function updateTouchPan() {
+function getScrollRoot() {
+  return document.scrollingElement || document.documentElement;
+}
+
+function flushTouchPan() {
+  touchPanFrameId = 0;
   if (!touchPanState || touchPointers.size < 2) return;
   const midpoint = getTwoFingerMidpoint();
   if (!midpoint) return;
   const deltaX = midpoint.x - touchPanState.midpoint.x;
   const deltaY = midpoint.y - touchPanState.midpoint.y;
-  window.scrollTo({
-    left: touchPanState.scrollX - deltaX,
-    top: touchPanState.scrollY - deltaY,
-    behavior: "auto"
-  });
+  const scrollRoot = getScrollRoot();
+  scrollRoot.scrollLeft -= deltaX;
+  scrollRoot.scrollTop -= deltaY;
+  touchPanState.midpoint = midpoint;
+}
+
+function updateTouchPan() {
+  if (!touchPanState || touchPointers.size < 2 || touchPanFrameId) return;
+  touchPanFrameId = window.requestAnimationFrame(flushTouchPan);
 }
 
 function bindAnnotationTools() {
@@ -747,6 +769,10 @@ function bindAnnotationTools() {
     cancelActiveStroke();
     touchPointers.clear();
     touchPanState = null;
+    if (touchPanFrameId) {
+      window.cancelAnimationFrame(touchPanFrameId);
+      touchPanFrameId = 0;
+    }
     renderAnnotationLayer();
   });
 
