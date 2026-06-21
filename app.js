@@ -25,6 +25,18 @@ let activeStroke = null;
 let activeStrokePointerId = null;
 const touchPointers = new Map();
 let touchPanState = null;
+let removeMobileTouchGuards = null;
+let touchPanFrameId = 0;
+let pageScrollLockY = 0;
+let deferredRenderTimer = 0;
+
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
+}
 
 function escapeSvg(value) {
   return String(value)
@@ -93,7 +105,10 @@ function resetAnnotations() {
 }
 
 function isMobileViewport() {
-  return window.matchMedia("(max-width: 820px)").matches;
+  const isCompactWidth = window.matchMedia("(max-width: 820px)").matches;
+  const isCompactTouchLayout = ((navigator.maxTouchPoints || 0) > 0 || window.matchMedia("(hover: none) and (pointer: coarse)").matches)
+    && window.innerWidth <= 1180;
+  return isCompactWidth || isCompactTouchLayout;
 }
 
 function rememberAnnotationHelpShown() {
@@ -118,6 +133,36 @@ function maybeShowAnnotationHelp() {
   if (!dialog || dialog.open) return;
   rememberAnnotationHelpShown();
   dialog.showModal();
+}
+
+function shouldBlockNativeTouchGesture(target) {
+  if (!isMobileViewport() || !state.annotationMode) return false;
+  if (!(target instanceof Element)) return true;
+  return !target.closest(".annotation-tools");
+}
+
+function syncMobileTouchGuards() {
+  if (removeMobileTouchGuards) {
+    removeMobileTouchGuards();
+    removeMobileTouchGuards = null;
+  }
+
+  if (!isMobileViewport() || !state.annotationMode) return;
+
+  const preventNativeGesture = (event) => {
+    if (!shouldBlockNativeTouchGesture(event.target)) return;
+    event.preventDefault();
+  };
+
+  document.addEventListener("touchmove", preventNativeGesture, { passive: false, capture: true });
+  document.addEventListener("gesturestart", preventNativeGesture, { passive: false, capture: true });
+  document.addEventListener("gesturechange", preventNativeGesture, { passive: false, capture: true });
+
+  removeMobileTouchGuards = () => {
+    document.removeEventListener("touchmove", preventNativeGesture, true);
+    document.removeEventListener("gesturestart", preventNativeGesture, true);
+    document.removeEventListener("gesturechange", preventNativeGesture, true);
+  };
 }
 
 function createNoteGaps(unit) {
@@ -211,16 +256,29 @@ function fillSupplementBody() {
   const article = state.article;
   if (!article) return;
 
+  const enrichmentMessage = article.enrichment?.message
+    ? `<p class="supplement-empty">${escapeHtml(article.enrichment.message)}</p>`
+    : "";
+  let refreshPrompt = "";
+  if (shouldShowRefreshButton(article)) {
+    const refreshCopy = article.enrichment?.status === "settled"
+      ? "当前结果仍可继续重试，点击顶部“刷新内容”后，页面会在本次请求里重新抓取一次，再更新当前内容。"
+      : "点击顶部“刷新内容”后，页面会在本次请求里等待抓取结果，再更新当前内容。";
+    refreshPrompt = `<p class="supplement-empty">${refreshCopy}</p>`;
+  }
+
   document.getElementById("translationBody").innerHTML = article.translation.length
-    ? article.translation.map((paragraph) => `<p>${paragraph}</p>`).join("")
+    ? article.translation.map((paragraph) => `<p>${escapeHtml(paragraph)}</p>`).join("")
     : `
       <p class="supplement-empty">当前未收录现成白话译文，下面给你准备了可直接打开的译文参考入口。</p>
+      ${enrichmentMessage}
+      ${refreshPrompt}
       <div class="reference-link-list">
         ${(article.translationReferences || [])
           .map((item) => `
             <a class="reference-link-card" href="${item.url}" target="_blank" rel="noreferrer">
-              <div class="reference-link-title">${item.label}</div>
-              <div class="reference-link-copy">${item.description}</div>
+              <div class="reference-link-title">${escapeHtml(item.label)}</div>
+              <div class="reference-link-copy">${escapeHtml(item.description)}</div>
             </a>
           `)
           .join("")}
@@ -229,12 +287,16 @@ function fillSupplementBody() {
 
   document.getElementById("notesBody").innerHTML = article.notes.length
     ? renderNoteGroups(article)
-    : `<div class="supplement-empty">当前还没有这篇作品的注释，后续可以继续补充教材注释或通用注释。</div>`;
+    : `
+      <div class="supplement-empty">当前还没有这篇作品的注释，后续可以继续补充教材注释或通用注释。</div>
+      ${enrichmentMessage}
+      ${refreshPrompt}
+    `;
   document.getElementById("recitationBody").innerHTML = (article.recitationReferences || [])
     .map((item) => `
       <a class="recitation-item" href="${item.url}" target="_blank" rel="noreferrer">
-        <div class="recitation-item-title">${item.label}</div>
-        <div class="recitation-item-copy">${item.description}</div>
+        <div class="recitation-item-title">${escapeHtml(item.label)}</div>
+        <div class="recitation-item-copy">${escapeHtml(item.description)}</div>
       </a>
     `)
     .join("");
@@ -254,6 +316,26 @@ function getAvailability(article) {
     notes: true,
     recitationReferences: Boolean(article.availability?.recitationReferences)
   };
+}
+
+function articleHasSupplementGap(article) {
+  if (!article) return false;
+  return !article.translation.length || !article.notes.length;
+}
+
+function shouldShowRefreshButton(article) {
+  if (!article || !articleHasSupplementGap(article)) {
+    return false;
+  }
+  return true;
+}
+
+function updateRefreshButton() {
+  const button = document.getElementById("refreshArticleButton");
+  if (!button) return;
+  const shouldShow = shouldShowRefreshButton(state.article);
+  button.classList.toggle("toolbar-refresh-button-hidden", !shouldShow);
+  button.disabled = Boolean(state.loading);
 }
 
 function updateToggleAvailability() {
@@ -280,6 +362,7 @@ function updateToggleAvailability() {
 function renderSupplementSections() {
   const availability = getAvailability(state.article);
   updateToggleAvailability();
+  updateRefreshButton();
 
   const translationSection = document.getElementById("translationSection");
   const notesSection = document.getElementById("notesSection");
@@ -358,6 +441,115 @@ function buildPrintablePreview() {
   return sheet;
 }
 
+function shouldUseImageExport() {
+  return isMobileViewport() && (navigator.maxTouchPoints || 0) > 0;
+}
+
+function getExportFileName(extension) {
+  const baseName = (state.article?.title || "古诗文排版")
+    .replace(/[\\/:*?"<>|]/g, "-")
+    .trim() || "古诗文排版";
+  return `${baseName}.${extension}`;
+}
+
+function isAppleMobileDevice() {
+  const ua = navigator.userAgent || "";
+  return /iPhone|iPad|iPod/i.test(ua) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+}
+
+function buildImageExportUrl() {
+  if (!state.article) {
+    return "";
+  }
+  const params = new URLSearchParams({
+    title: state.article.title || "",
+    author: state.article.author || "",
+    showTranslation: state.showTranslation ? "1" : "0",
+    showNotes: state.showNotes ? "1" : "0",
+    showPinyin: state.showPinyin ? "1" : "0"
+  });
+  return `/api/export-image?${params.toString()}`;
+}
+
+async function fetchImageExportBlob() {
+  const exportUrl = buildImageExportUrl();
+  if (!exportUrl) {
+    throw new Error("还没有可导出的内容。");
+  }
+
+  const response = await fetch(exportUrl, {
+    credentials: "same-origin"
+  });
+
+  if (!response.ok) {
+    const contentType = response.headers.get("content-type") || "";
+    if (contentType.includes("application/json")) {
+      const payload = await response.json();
+      throw new Error(payload.error || "长图导出失败。");
+    }
+    throw new Error("长图导出失败，请稍后重试。");
+  }
+
+  return response.blob();
+}
+
+async function exportLongImage() {
+  if (!state.article) return;
+  const exportUrl = buildImageExportUrl();
+  const fileName = getExportFileName("png");
+  const canUseFileShare = typeof navigator.share === "function" && typeof navigator.canShare === "function";
+
+  if (canUseFileShare) {
+    const blob = await fetchImageExportBlob();
+    const file = new File([blob], fileName, { type: blob.type || "image/png" });
+    if (navigator.canShare({ files: [file] })) {
+      try {
+        await navigator.share({
+          files: [file],
+          title: state.article.title,
+          text: `${state.article.title} 长图`
+        });
+        return;
+      } catch (error) {
+        if (error?.name === "AbortError") {
+          return;
+        }
+      }
+    }
+  }
+
+  const link = document.createElement("a");
+  link.href = exportUrl;
+  link.rel = "noopener";
+  if (isAppleMobileDevice()) {
+    link.target = "_blank";
+  } else {
+    link.download = fileName;
+  }
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+}
+
+async function handlePrimaryExport() {
+  if (shouldUseImageExport()) {
+    await exportLongImage();
+    return;
+  }
+  downloadPdf();
+}
+
+function syncExportButtonLabels() {
+  const downloadButton = document.getElementById("downloadPdfButton");
+  const previewButton = document.getElementById("previewPdfButton");
+  if (downloadButton) {
+    downloadButton.textContent = shouldUseImageExport() ? "保存长图" : "下载PDF";
+  }
+  if (previewButton) {
+    previewButton.textContent = shouldUseImageExport() ? "查看长图效果" : "查看PDF效果";
+  }
+}
+
 function renderPreviewSnapshot() {
   const host = document.getElementById("previewSnapshot");
   host.innerHTML = "";
@@ -392,6 +584,61 @@ function syncAnnotationLayerSize() {
   layer.setAttribute("height", String(height));
 }
 
+function getReaderPanel() {
+  return document.querySelector(".reader-panel");
+}
+
+function lockPageScroll() {
+  if (document.body.dataset.scrollLocked === "1") return;
+  pageScrollLockY = window.scrollY || window.pageYOffset || 0;
+  document.body.dataset.scrollLocked = "1";
+  document.body.style.position = "fixed";
+  document.body.style.top = `-${pageScrollLockY}px`;
+  document.body.style.left = "0";
+  document.body.style.right = "0";
+  document.body.style.width = "100%";
+  document.body.style.overflow = "hidden";
+}
+
+function unlockPageScroll() {
+  if (document.body.dataset.scrollLocked !== "1") return;
+  document.body.dataset.scrollLocked = "0";
+  document.body.style.position = "";
+  document.body.style.top = "";
+  document.body.style.left = "";
+  document.body.style.right = "";
+  document.body.style.width = "";
+  document.body.style.overflow = "";
+  window.scrollTo({
+    left: 0,
+    top: pageScrollLockY,
+    behavior: "auto"
+  });
+}
+
+function alignReaderPanelForAnnotation() {
+  if (!isMobileViewport()) return;
+  const readerPanel = getReaderPanel();
+  const toolbar = document.querySelector(".top-toolbar");
+  if (!readerPanel || !toolbar) return;
+  const toolbarHeight = Math.ceil(toolbar.getBoundingClientRect().height || 0);
+  const panelTop = readerPanel.getBoundingClientRect().top + window.scrollY;
+  const targetTop = Math.max(0, panelTop - toolbarHeight - 8);
+  window.scrollTo({
+    left: 0,
+    top: targetTop,
+    behavior: "auto"
+  });
+  readerPanel.scrollTop = 0;
+}
+
+function getActiveScrollRoot() {
+  if (isMobileViewport() && state.annotationMode) {
+    return getReaderPanel() || document.scrollingElement || document.documentElement;
+  }
+  return document.scrollingElement || document.documentElement;
+}
+
 function renderAnnotationLayer() {
   const stage = document.getElementById("readerStage");
   const layer = document.getElementById("annotationLayer");
@@ -402,7 +649,15 @@ function renderAnnotationLayer() {
 
   syncAnnotationLayerSize();
   stage.classList.toggle("annotation-active", state.annotationMode);
-  document.body.classList.toggle("mobile-annotation-focus", isMobileViewport() && state.annotationMode);
+  const mobileAnnotationFocus = isMobileViewport() && state.annotationMode;
+  document.body.classList.toggle("mobile-annotation-focus", mobileAnnotationFocus);
+  document.documentElement.classList.toggle("mobile-annotation-focus", mobileAnnotationFocus);
+  if (mobileAnnotationFocus) {
+    lockPageScroll();
+  } else {
+    unlockPageScroll();
+  }
+  syncMobileTouchGuards();
   modeButton.classList.toggle("is-active", state.annotationMode);
   eraserButton.classList.toggle("is-active", state.annotationMode && state.eraserMode);
   modeButton.textContent = state.annotationMode ? "退出批注" : "批注模式";
@@ -450,9 +705,16 @@ function downloadPdf() {
   setTimeout(() => printWindow.print(), 320);
 }
 
-async function fetchArticle(title, author) {
-  const query = new URLSearchParams({ title, author }).toString();
-  const response = await fetch(`/api/lookup?${query}`);
+async function fetchArticle(title, author, options = {}) {
+  const query = new URLSearchParams({
+    title,
+    author,
+    waitForEnrichment: "1"
+  });
+  if (options.forceRefresh) {
+    query.set("forceRefresh", "1");
+  }
+  const response = await fetch(`/api/lookup?${query.toString()}`);
   const payload = await response.json();
   if (!response.ok) {
     throw new Error(payload.error || (response.status === 403 ? "请先完成人机验证。" : "查询失败"));
@@ -468,7 +730,7 @@ function getInitialQuery() {
   };
 }
 
-async function runSearch() {
+async function runSearch(options = {}) {
   const title = document.getElementById("searchTitle").value.trim();
   const author = document.getElementById("searchAuthor").value.trim();
 
@@ -484,7 +746,7 @@ async function runSearch() {
   render();
 
   try {
-    const article = await fetchArticle(title, author);
+    const article = await fetchArticle(title, author, options);
     state.article = article;
     state.annotations = [];
     activeStroke = null;
@@ -499,6 +761,7 @@ async function runSearch() {
   } finally {
     state.loading = false;
     render();
+    scheduleDeferredRender();
   }
 }
 
@@ -533,14 +796,26 @@ function isTouchAnnotationEvent(event) {
   return event.pointerType === "touch" && isMobileViewport() && state.annotationMode;
 }
 
+function getViewportAdjustedTouchPoint(event) {
+  const viewport = window.visualViewport;
+  return {
+    x: event.clientX + (viewport?.offsetLeft || 0),
+    y: event.clientY + (viewport?.offsetTop || 0)
+  };
+}
+
 function updateTouchPointer(event) {
-  touchPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+  touchPointers.set(event.pointerId, getViewportAdjustedTouchPoint(event));
 }
 
 function removeTouchPointer(pointerId) {
   touchPointers.delete(pointerId);
   if (touchPointers.size < 2) {
     touchPanState = null;
+    if (touchPanFrameId) {
+      window.cancelAnimationFrame(touchPanFrameId);
+      touchPanFrameId = 0;
+    }
   }
 }
 
@@ -568,23 +843,26 @@ function beginTouchPan() {
   if (!midpoint) return;
   cancelActiveStroke(true);
   touchPanState = {
-    midpoint,
-    scrollX: window.scrollX,
-    scrollY: window.scrollY
+    midpoint
   };
 }
 
-function updateTouchPan() {
+function flushTouchPan() {
+  touchPanFrameId = 0;
   if (!touchPanState || touchPointers.size < 2) return;
   const midpoint = getTwoFingerMidpoint();
   if (!midpoint) return;
   const deltaX = midpoint.x - touchPanState.midpoint.x;
   const deltaY = midpoint.y - touchPanState.midpoint.y;
-  window.scrollTo({
-    left: touchPanState.scrollX - deltaX,
-    top: touchPanState.scrollY - deltaY,
-    behavior: "auto"
-  });
+  const scrollRoot = getActiveScrollRoot();
+  scrollRoot.scrollLeft -= deltaX;
+  scrollRoot.scrollTop -= deltaY;
+  touchPanState.midpoint = midpoint;
+}
+
+function updateTouchPan() {
+  if (!touchPanState || touchPointers.size < 2 || touchPanFrameId) return;
+  touchPanFrameId = window.requestAnimationFrame(flushTouchPan);
 }
 
 function bindAnnotationTools() {
@@ -599,6 +877,7 @@ function bindAnnotationTools() {
     state.annotationMode = !state.annotationMode;
     if (state.annotationMode) {
       state.eraserMode = false;
+      alignReaderPanelForAnnotation();
       maybeShowAnnotationHelp();
     } else {
       state.eraserMode = false;
@@ -606,12 +885,17 @@ function bindAnnotationTools() {
     cancelActiveStroke();
     touchPointers.clear();
     touchPanState = null;
+    if (touchPanFrameId) {
+      window.cancelAnimationFrame(touchPanFrameId);
+      touchPanFrameId = 0;
+    }
     renderAnnotationLayer();
   });
 
   eraserButton.addEventListener("click", () => {
     if (!state.annotationMode) {
       state.annotationMode = true;
+      alignReaderPanelForAnnotation();
       maybeShowAnnotationHelp();
     }
     state.eraserMode = !state.eraserMode;
@@ -720,6 +1004,7 @@ function bindToolbarJumpButtons() {
 
 function bindSearchInputs() {
   document.getElementById("searchButton").addEventListener("click", runSearch);
+  document.getElementById("refreshArticleButton").addEventListener("click", () => runSearch({ forceRefresh: true }));
   ["searchTitle", "searchAuthor"].forEach((id) => {
     document.getElementById(id).addEventListener("keydown", (event) => {
       if (event.key === "Enter") runSearch();
@@ -780,7 +1065,27 @@ function render() {
   renderSupplementSections();
   renderPreviewSnapshot();
   renderStatus();
+  syncExportButtonLabels();
   renderAnnotationLayer();
+}
+
+function scheduleDeferredRender() {
+  if (deferredRenderTimer) {
+    window.clearTimeout(deferredRenderTimer);
+    deferredRenderTimer = 0;
+  }
+
+  window.requestAnimationFrame(() => {
+    render();
+    window.requestAnimationFrame(() => {
+      render();
+    });
+  });
+
+  deferredRenderTimer = window.setTimeout(() => {
+    deferredRenderTimer = 0;
+    render();
+  }, 140);
 }
 
 function startReaderApp() {
@@ -793,7 +1098,13 @@ function startReaderApp() {
   bindNoteNavigation();
   bindAnnotationTools();
 
-  document.getElementById("downloadPdfButton").addEventListener("click", downloadPdf);
+  document.getElementById("downloadPdfButton").addEventListener("click", async () => {
+    try {
+      await handlePrimaryExport();
+    } catch (error) {
+      window.alert(error.message || "导出失败，请稍后重试。");
+    }
+  });
   document.getElementById("previewPdfButton").addEventListener("click", openPreviewDialog);
   document.getElementById("closeDialogButton").addEventListener("click", () => {
     document.getElementById("pdfDialog").close();
@@ -802,17 +1113,27 @@ function startReaderApp() {
     document.getElementById("annotationHelpDialog").close();
   });
 
-  window.addEventListener("resize", renderAnnotationLayer);
+  window.addEventListener("resize", scheduleDeferredRender);
+  window.addEventListener("orientationchange", scheduleDeferredRender);
+  window.addEventListener("pageshow", scheduleDeferredRender);
+  window.visualViewport?.addEventListener("resize", scheduleDeferredRender);
+  document.fonts?.ready?.then(() => {
+    scheduleDeferredRender();
+  });
   const initial = getInitialQuery();
   if (initial.title) {
     document.getElementById("searchTitle").value = initial.title;
     document.getElementById("searchAuthor").value = initial.author;
-    runSearch();
+    window.requestAnimationFrame(() => {
+      runSearch();
+    });
     return;
   }
   document.getElementById("searchTitle").value = "岳阳楼记";
   document.getElementById("searchAuthor").value = "范仲淹";
-  runSearch();
+  window.requestAnimationFrame(() => {
+    runSearch();
+  });
 }
 
 function bootstrap() {

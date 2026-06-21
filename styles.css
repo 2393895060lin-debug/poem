@@ -31,6 +31,11 @@ body {
   overflow-y: auto;
 }
 
+html.mobile-annotation-focus,
+body.mobile-annotation-focus {
+  overscroll-behavior: none;
+}
+
 .page-shell {
   min-height: 100vh;
   display: grid;
@@ -846,6 +851,32 @@ body {
   white-space: nowrap;
 }
 
+.toolbar-refresh-button {
+  height: 32px;
+  padding: 0 14px;
+  border: 1px solid rgba(150, 140, 112, 0.56);
+  border-radius: 999px;
+  background: rgba(247, 239, 221, 0.96);
+  color: #4d534f;
+  font-family: "Source Han Sans SC", "PingFang SC", sans-serif;
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.toolbar-refresh-button:hover {
+  background: rgba(240, 231, 210, 0.98);
+}
+
+.toolbar-refresh-button:disabled {
+  opacity: 0.58;
+  cursor: wait;
+}
+
+.toolbar-refresh-button-hidden {
+  display: none;
+}
+
 .back-home-link {
   display: inline-flex;
   align-items: center;
@@ -1019,8 +1050,17 @@ body {
 }
 
 @media (max-width: 1180px) {
+  .page-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .page-rail {
+    display: none;
+  }
+
   .top-toolbar {
     gap: 8px 12px;
+    padding-left: 18px;
     padding-right: 12px;
   }
 
@@ -1042,6 +1082,10 @@ body {
     position: static;
     border-left: none;
     padding-bottom: 40px;
+  }
+
+  .preview-frame {
+    display: none;
   }
 }
 
@@ -1130,6 +1174,19 @@ body {
     gap: 8px;
   }
 
+  body.mobile-annotation-focus .page-shell,
+  body.mobile-annotation-focus .app-main {
+    min-height: 100dvh;
+    height: 100dvh;
+  }
+
+  body.mobile-annotation-focus .workspace {
+    flex: 1 1 auto;
+    min-height: 0;
+    padding-top: 8px;
+    padding-bottom: 12px;
+  }
+
   body.mobile-annotation-focus .back-home-link,
   body.mobile-annotation-focus .query-status,
   body.mobile-annotation-focus .toggle-row-compact {
@@ -1141,6 +1198,24 @@ body {
     margin-left: 0;
     padding-left: 0;
     border-left: none;
+  }
+
+  body.mobile-annotation-focus .control-panel {
+    display: none;
+  }
+
+  body.mobile-annotation-focus .reader-panel {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+    padding-right: 2px;
+    padding-bottom: 18px;
+  }
+
+  body.mobile-annotation-focus .reader-stage {
+    padding-bottom: 12px;
   }
 
   .annotation-detail-tools {
