@@ -48,16 +48,20 @@ body {
   justify-content: center;
   text-align: center;
   border-radius: 28px;
+  overflow: hidden;
   background: linear-gradient(180deg, rgba(255, 253, 246, 0.78), rgba(244, 239, 220, 0.88));
   box-shadow: 0 18px 40px rgba(83, 74, 48, 0.12);
 }
 
 .hero-logo {
   margin: 0;
+  display: block;
+  max-width: 100%;
+  white-space: nowrap;
   font-family: "Liu Jian Mao Cao", "STXingkai", "Xingkai SC", "STKaiti", serif;
-  font-size: clamp(84px, 14vw, 156px);
+  font-size: clamp(58px, 16.8vw, 156px);
   font-weight: 400;
-  letter-spacing: 0.02em;
+  letter-spacing: clamp(-0.08em, -0.02em, -0.02em);
   line-height: 0.95;
   color: rgba(31, 24, 18, 0.96);
   text-shadow:
@@ -154,6 +158,11 @@ body {
 
   .hero {
     min-height: 60vh;
+  }
+
+  .hero-logo {
+    font-size: clamp(58px, 18vw, 84px);
+    letter-spacing: -0.06em;
   }
 
   .hero-copy {
