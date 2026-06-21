@@ -1024,8 +1024,17 @@ body.mobile-annotation-focus {
 }
 
 @media (max-width: 1180px) {
+  .page-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .page-rail {
+    display: none;
+  }
+
   .top-toolbar {
     gap: 8px 12px;
+    padding-left: 18px;
     padding-right: 12px;
   }
 
@@ -1047,6 +1056,10 @@ body.mobile-annotation-focus {
     position: static;
     border-left: none;
     padding-bottom: 40px;
+  }
+
+  .preview-frame {
+    display: none;
   }
 }
 
