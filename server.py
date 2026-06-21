@@ -36,6 +36,7 @@ LOOKUP_SCRIPT_CANDIDATES = [
 ]
 KNOWLEDGE_BASE_PATH = ROOT / "textbook_knowledge_base.json"
 GENERAL_ANNOTATION_BASE_PATH = ROOT / "general_annotation_base.json"
+TOP500_KNOWLEDGE_BASE_PATH = ROOT / "top500_knowledge_base.json"
 TEXTBOOK_SOURCE_REGISTRY_PATH = ROOT / "textbook_source_registry.json"
 
 EXTERNAL_TRANSLATION_SOURCES = {
@@ -279,6 +280,7 @@ def write_json_file(path: Path, payload):
 
 TEXTBOOK_KNOWLEDGE_BASE = load_json_database(KNOWLEDGE_BASE_PATH, "教材知识库")
 GENERAL_ANNOTATION_BASE = load_json_database(GENERAL_ANNOTATION_BASE_PATH, "补充注释库")
+TOP500_KNOWLEDGE_BASE = load_json_database(TOP500_KNOWLEDGE_BASE_PATH, "TOP500归档库")
 TEXTBOOK_SOURCE_REGISTRY = json.loads(TEXTBOOK_SOURCE_REGISTRY_PATH.read_text(encoding="utf-8")) if TEXTBOOK_SOURCE_REGISTRY_PATH.exists() else {"works": []}
 ensure_runtime_dirs()
 AUTO_SUPPLEMENT_CACHE = load_json_object(AUTO_SUPPLEMENT_CACHE_PATH, {"works": {}})
@@ -315,19 +317,20 @@ def resolve_known_title_alias(title: str) -> str:
     if not normalized_title:
         return title
 
-    alias_map = TEXTBOOK_KNOWLEDGE_BASE.get("aliases", {})
-    for alias, canonical in alias_map.items():
-        if normalize_key(alias) == normalized_title and str(canonical).strip():
-            return str(canonical).strip()
+    for database in (TEXTBOOK_KNOWLEDGE_BASE, TOP500_KNOWLEDGE_BASE):
+        alias_map = database.get("aliases", {})
+        for alias, canonical in alias_map.items():
+            if normalize_key(alias) == normalized_title and str(canonical).strip():
+                return str(canonical).strip()
 
-    for canonical_title, entry in TEXTBOOK_KNOWLEDGE_BASE.get("works", {}).items():
-        if normalize_key(canonical_title) == normalized_title:
-            return canonical_title
-        if not isinstance(entry, dict):
-            continue
-        for alias in entry.get("aliases", []):
-            if normalize_key(str(alias)) == normalized_title:
+        for canonical_title, entry in database.get("works", {}).items():
+            if normalize_key(canonical_title) == normalized_title:
                 return canonical_title
+            if not isinstance(entry, dict):
+                continue
+            for alias in entry.get("aliases", []):
+                if normalize_key(str(alias)) == normalized_title:
+                    return canonical_title
 
     return title
 
@@ -697,10 +700,11 @@ def author_matches_any_preferred(candidate_author: str, preferred_authors: set[s
 
 def preferred_authors_for_title(title: str) -> set[str]:
     authors = set()
-    title_entry = database_entry_for(TEXTBOOK_KNOWLEDGE_BASE, title)
-    author = str(title_entry.get("author", "")).strip()
-    if author:
-        authors.update(normalized_name_variants(author))
+    for database in (TEXTBOOK_KNOWLEDGE_BASE, TOP500_KNOWLEDGE_BASE):
+        title_entry = database_entry_for(database, title)
+        author = str(title_entry.get("author", "")).strip()
+        if author:
+            authors.update(normalized_name_variants(author))
     for item in TEXTBOOK_SOURCE_REGISTRY.get("works", []):
         if normalize_key(item.get("title", "")) != normalize_key(title):
             continue
@@ -1811,14 +1815,21 @@ def render_export_image_png(payload: dict, *, show_translation: bool, show_notes
 
 def build_payload(title: str, author: str = "", wait_for_enrichment: bool = False, force_refresh: bool = False, _sync_attempted: bool = False):
     resolved_title = resolve_known_title_alias(title)
+    title_entry = database_entry_for(TEXTBOOK_KNOWLEDGE_BASE, resolved_title)
+    top500_title_entry = database_entry_for(TOP500_KNOWLEDGE_BASE, resolved_title)
+    lookup_author = (
+        str(author or "").strip()
+        or str(top500_title_entry.get("author", "")).strip()
+        or str(title_entry.get("author", "")).strip()
+    )
     try:
-        result = lookup_preferred_same_title_result(resolved_title, author or "")
+        result = lookup_preferred_same_title_result(resolved_title, lookup_author)
         if not result:
-            result = LOOKUP_MODULE.lookup(resolved_title, author or "")
+            result = LOOKUP_MODULE.lookup(resolved_title, lookup_author)
     except Exception as exc:
-        result = lookup_from_registry(resolved_title, author or "")
+        result = lookup_from_registry(resolved_title, lookup_author)
         if not result:
-            result = lookup_from_guwendao_search(resolved_title, author or "")
+            result = lookup_from_guwendao_search(resolved_title, lookup_author)
         if not result:
             if author:
                 raise LookupError(f"未找到作者为“{author}”的《{resolved_title}》。请检查作者写法，或留空作者后重新查询。") from exc
@@ -1826,15 +1837,19 @@ def build_payload(title: str, author: str = "", wait_for_enrichment: bool = Fals
     supplements = SUPPLEMENTS.get(result.title, {})
     textbook_entry = database_entry_for(TEXTBOOK_KNOWLEDGE_BASE, result.title)
     general_entry = database_entry_for(GENERAL_ANNOTATION_BASE, result.title)
+    top500_entry = database_entry_for(TOP500_KNOWLEDGE_BASE, result.title)
     auto_entry = get_auto_supplement_entry(result.title, result.author)
     dynasty = (
         result.dynasty
         or str(textbook_entry.get("dynasty", "")).strip()
+        or str(top500_entry.get("dynasty", "")).strip()
         or str(general_entry.get("dynasty", "")).strip()
         or str(supplements.get("dynasty", "")).strip()
     )
     author_display, author_pinyin = author_views(result.author, dynasty)
     translation = normalize_text_list(textbook_entry.get("translation") or supplements.get("translation", []))
+    if not translation:
+        translation = normalize_text_list(top500_entry.get("translation", []))
     if not translation:
         translation = normalize_text_list(auto_entry.get("translation", []))
     if not translation:
@@ -1842,16 +1857,18 @@ def build_payload(title: str, author: str = "", wait_for_enrichment: bool = Fals
     appreciation = normalize_text_list(textbook_entry.get("appreciation") or supplements.get("appreciation", []))
     recite = normalize_text_list(textbook_entry.get("recite") or supplements.get("recite", []))
     textbook_notes = textbook_entry.get("notes", [])
+    top500_notes = top500_entry.get("notes", [])
     supplemental_notes = list(general_entry.get("notes", []))
     supplemental_notes.extend(collect_global_notes(GENERAL_ANNOTATION_BASE, result.title, result.content))
-    if not textbook_notes and not supplemental_notes:
+    if not textbook_notes and not top500_notes and not supplemental_notes:
         supplemental_notes.extend(supplements.get("notes", []))
     auto_notes = []
-    if not textbook_notes and not supplemental_notes:
+    if not textbook_notes and not top500_notes and not supplemental_notes:
         auto_notes = auto_entry.get("notes", [])
     notes, note_groups = merge_note_buckets(
         [
             ("课本注释", "textbook", textbook_notes),
+            ("TOP500归档注释", "archive", top500_notes),
             ("补充注释", "supplemental", supplemental_notes),
             ("后台补全注释", "auto", auto_notes),
         ]
@@ -1889,6 +1906,8 @@ def build_payload(title: str, author: str = "", wait_for_enrichment: bool = Fals
         note_source = "textbook+supplemental"
     elif textbook_notes:
         note_source = "textbook"
+    elif top500_notes:
+        note_source = "archive"
     elif supplemental_notes:
         note_source = "supplemental"
     elif auto_notes:
