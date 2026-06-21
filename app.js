@@ -28,6 +28,7 @@ let touchPanState = null;
 let removeMobileTouchGuards = null;
 let touchPanFrameId = 0;
 let pageScrollLockY = 0;
+let deferredRenderTimer = 0;
 
 function escapeSvg(value) {
   return String(value)
@@ -96,7 +97,10 @@ function resetAnnotations() {
 }
 
 function isMobileViewport() {
-  return window.matchMedia("(max-width: 820px)").matches;
+  const isCompactWidth = window.matchMedia("(max-width: 820px)").matches;
+  const isCompactTouchLayout = ((navigator.maxTouchPoints || 0) > 0 || window.matchMedia("(hover: none) and (pointer: coarse)").matches)
+    && window.innerWidth <= 1180;
+  return isCompactWidth || isCompactTouchLayout;
 }
 
 function rememberAnnotationHelpShown() {
@@ -704,6 +708,7 @@ async function runSearch() {
   } finally {
     state.loading = false;
     render();
+    scheduleDeferredRender();
   }
 }
 
@@ -1010,6 +1015,25 @@ function render() {
   renderAnnotationLayer();
 }
 
+function scheduleDeferredRender() {
+  if (deferredRenderTimer) {
+    window.clearTimeout(deferredRenderTimer);
+    deferredRenderTimer = 0;
+  }
+
+  window.requestAnimationFrame(() => {
+    render();
+    window.requestAnimationFrame(() => {
+      render();
+    });
+  });
+
+  deferredRenderTimer = window.setTimeout(() => {
+    deferredRenderTimer = 0;
+    render();
+  }, 140);
+}
+
 function startReaderApp() {
   syncToggle("toggleTranslation", "showTranslation", toggleTargets.toggleTranslation);
   syncToggle("toggleNotes", "showNotes", toggleTargets.toggleNotes);
@@ -1035,17 +1059,27 @@ function startReaderApp() {
     document.getElementById("annotationHelpDialog").close();
   });
 
-  window.addEventListener("resize", render);
+  window.addEventListener("resize", scheduleDeferredRender);
+  window.addEventListener("orientationchange", scheduleDeferredRender);
+  window.addEventListener("pageshow", scheduleDeferredRender);
+  window.visualViewport?.addEventListener("resize", scheduleDeferredRender);
+  document.fonts?.ready?.then(() => {
+    scheduleDeferredRender();
+  });
   const initial = getInitialQuery();
   if (initial.title) {
     document.getElementById("searchTitle").value = initial.title;
     document.getElementById("searchAuthor").value = initial.author;
-    runSearch();
+    window.requestAnimationFrame(() => {
+      runSearch();
+    });
     return;
   }
   document.getElementById("searchTitle").value = "岳阳楼记";
   document.getElementById("searchAuthor").value = "范仲淹";
-  runSearch();
+  window.requestAnimationFrame(() => {
+    runSearch();
+  });
 }
 
 function bootstrap() {
