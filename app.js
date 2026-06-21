@@ -27,6 +27,7 @@ const touchPointers = new Map();
 let touchPanState = null;
 let removeMobileTouchGuards = null;
 let touchPanFrameId = 0;
+let pageScrollLockY = 0;
 
 function escapeSvg(value) {
   return String(value)
@@ -533,6 +534,61 @@ function syncAnnotationLayerSize() {
   layer.setAttribute("height", String(height));
 }
 
+function getReaderPanel() {
+  return document.querySelector(".reader-panel");
+}
+
+function lockPageScroll() {
+  if (document.body.dataset.scrollLocked === "1") return;
+  pageScrollLockY = window.scrollY || window.pageYOffset || 0;
+  document.body.dataset.scrollLocked = "1";
+  document.body.style.position = "fixed";
+  document.body.style.top = `-${pageScrollLockY}px`;
+  document.body.style.left = "0";
+  document.body.style.right = "0";
+  document.body.style.width = "100%";
+  document.body.style.overflow = "hidden";
+}
+
+function unlockPageScroll() {
+  if (document.body.dataset.scrollLocked !== "1") return;
+  document.body.dataset.scrollLocked = "0";
+  document.body.style.position = "";
+  document.body.style.top = "";
+  document.body.style.left = "";
+  document.body.style.right = "";
+  document.body.style.width = "";
+  document.body.style.overflow = "";
+  window.scrollTo({
+    left: 0,
+    top: pageScrollLockY,
+    behavior: "auto"
+  });
+}
+
+function alignReaderPanelForAnnotation() {
+  if (!isMobileViewport()) return;
+  const readerPanel = getReaderPanel();
+  const toolbar = document.querySelector(".top-toolbar");
+  if (!readerPanel || !toolbar) return;
+  const toolbarHeight = Math.ceil(toolbar.getBoundingClientRect().height || 0);
+  const panelTop = readerPanel.getBoundingClientRect().top + window.scrollY;
+  const targetTop = Math.max(0, panelTop - toolbarHeight - 8);
+  window.scrollTo({
+    left: 0,
+    top: targetTop,
+    behavior: "auto"
+  });
+  readerPanel.scrollTop = 0;
+}
+
+function getActiveScrollRoot() {
+  if (isMobileViewport() && state.annotationMode) {
+    return getReaderPanel() || document.scrollingElement || document.documentElement;
+  }
+  return document.scrollingElement || document.documentElement;
+}
+
 function renderAnnotationLayer() {
   const stage = document.getElementById("readerStage");
   const layer = document.getElementById("annotationLayer");
@@ -546,6 +602,11 @@ function renderAnnotationLayer() {
   const mobileAnnotationFocus = isMobileViewport() && state.annotationMode;
   document.body.classList.toggle("mobile-annotation-focus", mobileAnnotationFocus);
   document.documentElement.classList.toggle("mobile-annotation-focus", mobileAnnotationFocus);
+  if (mobileAnnotationFocus) {
+    lockPageScroll();
+  } else {
+    unlockPageScroll();
+  }
   syncMobileTouchGuards();
   modeButton.classList.toggle("is-active", state.annotationMode);
   eraserButton.classList.toggle("is-active", state.annotationMode && state.eraserMode);
@@ -728,10 +789,6 @@ function beginTouchPan() {
   };
 }
 
-function getScrollRoot() {
-  return document.scrollingElement || document.documentElement;
-}
-
 function flushTouchPan() {
   touchPanFrameId = 0;
   if (!touchPanState || touchPointers.size < 2) return;
@@ -739,7 +796,7 @@ function flushTouchPan() {
   if (!midpoint) return;
   const deltaX = midpoint.x - touchPanState.midpoint.x;
   const deltaY = midpoint.y - touchPanState.midpoint.y;
-  const scrollRoot = getScrollRoot();
+  const scrollRoot = getActiveScrollRoot();
   scrollRoot.scrollLeft -= deltaX;
   scrollRoot.scrollTop -= deltaY;
   touchPanState.midpoint = midpoint;
@@ -762,6 +819,7 @@ function bindAnnotationTools() {
     state.annotationMode = !state.annotationMode;
     if (state.annotationMode) {
       state.eraserMode = false;
+      alignReaderPanelForAnnotation();
       maybeShowAnnotationHelp();
     } else {
       state.eraserMode = false;
@@ -779,6 +837,7 @@ function bindAnnotationTools() {
   eraserButton.addEventListener("click", () => {
     if (!state.annotationMode) {
       state.annotationMode = true;
+      alignReaderPanelForAnnotation();
       maybeShowAnnotationHelp();
     }
     state.eraserMode = !state.eraserMode;

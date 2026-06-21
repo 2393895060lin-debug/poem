@@ -31,6 +31,7 @@ body {
   overflow-y: auto;
 }
 
+html.mobile-annotation-focus,
 body.mobile-annotation-focus {
   overscroll-behavior: none;
 }
@@ -1134,6 +1135,19 @@ body.mobile-annotation-focus {
     gap: 8px;
   }
 
+  body.mobile-annotation-focus .page-shell,
+  body.mobile-annotation-focus .app-main {
+    min-height: 100dvh;
+    height: 100dvh;
+  }
+
+  body.mobile-annotation-focus .workspace {
+    flex: 1 1 auto;
+    min-height: 0;
+    padding-top: 8px;
+    padding-bottom: 12px;
+  }
+
   body.mobile-annotation-focus .back-home-link,
   body.mobile-annotation-focus .query-status,
   body.mobile-annotation-focus .toggle-row-compact {
@@ -1145,6 +1159,24 @@ body.mobile-annotation-focus {
     margin-left: 0;
     padding-left: 0;
     border-left: none;
+  }
+
+  body.mobile-annotation-focus .control-panel {
+    display: none;
+  }
+
+  body.mobile-annotation-focus .reader-panel {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+    padding-right: 2px;
+    padding-bottom: 18px;
+  }
+
+  body.mobile-annotation-focus .reader-stage {
+    padding-bottom: 12px;
   }
 
   .annotation-detail-tools {
