@@ -10,6 +10,7 @@ import secrets
 import sys
 import threading
 import time
+from difflib import SequenceMatcher
 from functools import lru_cache
 from http import HTTPStatus
 from http.cookies import SimpleCookie
@@ -100,6 +101,14 @@ verified_human_tokens: dict[str, float] = {}
 verified_human_tokens_lock = threading.Lock()
 PUNCTUATION_MARKS = {"，", "。", "；", "：", "？", "！", "“", "”", "〔", "〕", "（", "）", "《", "》", "、"}
 INLINE_SYMBOLS = {"〔", "〕", "（", "）", "《", "》", "[", "]", "【", "】"}
+RECITE_LAYOUT_SPLIT_RE = re.compile(r"[\s\u3000,，.。?？!！;；:：、]+")
+RECITE_LAYOUT_IGNORED_CHARS = PUNCTUATION_MARKS | INLINE_SYMBOLS | {",", ".", "?", "!", ";", ":", " "}
+RECITE_NORMALIZE_DROP_CHARS = RECITE_LAYOUT_IGNORED_CHARS | {"\n", "\r", "\t", '"', "'", "‘", "’", "〈", "〉", "「", "」", "『", "』"}
+RECITE_PAGE_MAX_COLUMNS = 8
+RECITE_PAGE_MAX_LINE_CHARS = 12
+RECITE_PAGE_CHAR_CAPACITY = RECITE_PAGE_MAX_COLUMNS * RECITE_PAGE_MAX_LINE_CHARS
+RECITE_SENTENCE_SPLIT_RE = re.compile(r"[。？！!?；;]+")
+RECITE_CLAUSE_SPLIT_RE = re.compile(r"[，,：:、]+")
 EXPORT_FONT_PATH_CANDIDATES = {
     "regular": [
         Path(os.getenv("POEM_EXPORT_FONT_PATH", "")).expanduser() if os.getenv("POEM_EXPORT_FONT_PATH") else None,
@@ -1448,6 +1457,286 @@ def build_translation_references(title: str, author: str):
     ]
 
 
+def resolve_lookup_result(title: str, author: str = ""):
+    resolved_title = resolve_known_title_alias(title)
+    title_entry = database_entry_for(TEXTBOOK_KNOWLEDGE_BASE, resolved_title)
+    top500_title_entry = database_entry_for(TOP500_KNOWLEDGE_BASE, resolved_title)
+    lookup_author = (
+        str(author or "").strip()
+        or str(top500_title_entry.get("author", "")).strip()
+        or str(title_entry.get("author", "")).strip()
+    )
+    try:
+        result = lookup_preferred_same_title_result(resolved_title, lookup_author)
+        if not result:
+            result = LOOKUP_MODULE.lookup(resolved_title, lookup_author)
+    except Exception as exc:
+        result = lookup_from_registry(resolved_title, lookup_author)
+        if not result:
+            result = lookup_from_guwendao_search(resolved_title, lookup_author)
+        if not result:
+            if author:
+                raise LookupError(f"未找到作者为“{author}”的《{resolved_title}》。请检查作者写法，或留空作者后重新查询。") from exc
+            raise
+    return resolved_title, result
+
+
+def split_recite_fragment_hard(text: str, max_chars: int = RECITE_PAGE_MAX_LINE_CHARS):
+    normalized = normalize_text(text)
+    if not normalized:
+        return []
+    if len(normalized) <= max_chars:
+        return [normalized]
+    return [normalized[index:index + max_chars] for index in range(0, len(normalized), max_chars)]
+
+
+def split_recite_line(raw_line: str, max_chars: int = RECITE_PAGE_MAX_LINE_CHARS):
+    cleaned_line = str(raw_line or "").strip()
+    if not cleaned_line:
+        return []
+
+    sentence_parts = [part.strip() for part in RECITE_SENTENCE_SPLIT_RE.split(cleaned_line) if part.strip()]
+    if not sentence_parts:
+        sentence_parts = [cleaned_line]
+
+    segments = []
+    for sentence in sentence_parts:
+        normalized_sentence = normalize_text(sentence)
+        if not normalized_sentence:
+            continue
+        if len(normalized_sentence) <= max_chars:
+            segments.append(normalized_sentence)
+            continue
+
+        clause_parts = [part.strip() for part in RECITE_CLAUSE_SPLIT_RE.split(sentence) if part.strip()]
+        if not clause_parts:
+            clause_parts = [sentence]
+
+        for clause in clause_parts:
+            normalized_clause = normalize_text(clause)
+            if not normalized_clause:
+                continue
+            if len(normalized_clause) <= max_chars:
+                segments.append(normalized_clause)
+                continue
+            segments.extend(split_recite_fragment_hard(normalized_clause, max_chars=max_chars))
+
+    return [segment for segment in segments if segment]
+
+
+def extract_recite_lines(title: str, author: str = ""):
+    _, result = resolve_lookup_result(title, author)
+    content_lines = sanitize_content_lines(result.content or [])
+    recite_lines = []
+
+    for raw_line in content_lines:
+        recite_lines.extend(split_recite_line(raw_line, max_chars=RECITE_PAGE_MAX_LINE_CHARS))
+
+    if not recite_lines:
+        raise LookupError(f"《{result.title}》已找到，但当前未能整理出适合竹简背诵的正文内容。")
+
+    return result, recite_lines
+
+
+def paginate_recite_lines(lines: list[str]):
+    pages = []
+    current_lines = []
+    current_char_count = 0
+
+    def flush_page():
+        nonlocal current_lines, current_char_count
+        if not current_lines:
+            return
+        page_index = len(pages)
+        pages.append({
+            "page_index": page_index,
+            "page_title": f"第{page_index + 1}简",
+            "lines": current_lines[:],
+            "columns": [list(line) for line in current_lines],
+            "line_count": len(current_lines),
+            "char_count": current_char_count,
+        })
+        current_lines = []
+        current_char_count = 0
+
+    for line in lines:
+        line_length = len(line)
+        needs_new_page = current_lines and (
+            current_char_count + line_length > RECITE_PAGE_CHAR_CAPACITY
+            or len(current_lines) >= RECITE_PAGE_MAX_COLUMNS
+        )
+        if needs_new_page:
+            flush_page()
+
+        current_lines.append(line)
+        current_char_count += line_length
+
+    flush_page()
+    return pages
+
+
+def extract_recite_pages(title: str, author: str = ""):
+    result, recite_lines = extract_recite_lines(title, author)
+    pages = paginate_recite_lines(recite_lines)
+    return result, pages
+
+
+def build_recite_layout_payload(title: str, author: str = ""):
+    result, pages = extract_recite_pages(title, author)
+
+    return {
+        "success": True,
+        "title": result.title,
+        "author": result.author,
+        "total_pages": len(pages),
+        "page_char_capacity": RECITE_PAGE_CHAR_CAPACITY,
+        "page_column_capacity": RECITE_PAGE_MAX_COLUMNS,
+        "line_char_capacity": RECITE_PAGE_MAX_LINE_CHARS,
+        "pages": pages,
+    }
+
+
+def normalize_text(text) -> str:
+    raw = str(text or "")
+    return "".join(char for char in raw if char not in RECITE_NORMALIZE_DROP_CHARS and not char.isspace())
+
+
+def compare_recitation(expected: str, spoken: str):
+    normalized_expected = normalize_text(expected)
+    normalized_spoken = normalize_text(spoken)
+    expected_chars = list(normalized_expected)
+    spoken_chars = list(normalized_spoken)
+    char_results = [{"char": char, "status": "wrong"} for char in expected_chars]
+    matcher = SequenceMatcher(a=expected_chars, b=spoken_chars)
+    has_extra_chars = False
+
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            for index in range(i1, i2):
+                char_results[index]["status"] = "correct"
+            continue
+        if tag == "insert" and j2 > j1 and char_results:
+            has_extra_chars = True
+            marker_index = min(i1, len(char_results) - 1)
+            char_results[marker_index]["status"] = "wrong"
+
+    passed = normalized_expected == normalized_spoken
+    return {
+        "passed": passed,
+        "char_results": char_results,
+        "normalized_expected": normalized_expected,
+        "normalized_spoken": normalized_spoken,
+        "has_extra_chars": has_extra_chars,
+    }
+
+
+def line_similarity(spoken: str, expected: str) -> float:
+    return SequenceMatcher(a=normalize_text(spoken), b=normalize_text(expected)).ratio()
+
+
+def find_best_matching_line(spoken: str, lines: list[str], current_line_index: int):
+    normalized_spoken = normalize_text(spoken)
+    candidate_indexes = []
+    for index in [current_line_index - 1, current_line_index, current_line_index + 1]:
+        if 0 <= index < len(lines) and index not in candidate_indexes:
+            candidate_indexes.append(index)
+
+    scored_candidates = []
+    for index in candidate_indexes:
+        normalized_line = normalize_text(lines[index])
+        score = SequenceMatcher(a=normalized_spoken, b=normalized_line).ratio()
+        scored_candidates.append((score, 0 if index == current_line_index else 1, index))
+
+    scored_candidates.sort(key=lambda item: (-item[0], item[1], item[2]))
+    best_score, _, best_index = scored_candidates[0]
+    current_score = next((score for score, _priority, index in scored_candidates if index == current_line_index), 0.0)
+    return {
+        "matched_line_index": best_index,
+        "score": best_score,
+        "current_line_score": current_score,
+    }
+
+
+def build_recite_check_payload(title: str, author: str, page_index: int, current_line_index: int, spoken_text: str):
+    result, pages = extract_recite_pages(title, author)
+    if not 0 <= page_index < len(pages):
+        raise ValueError("page_index 超出范围。")
+
+    current_page = pages[page_index]
+    current_lines = current_page["lines"]
+    if not 0 <= current_line_index < len(current_lines):
+        raise ValueError("current_line_index 超出范围。")
+
+    best_match = find_best_matching_line(spoken_text, current_lines, current_line_index)
+    matched_line_index = best_match["matched_line_index"]
+    comparison = compare_recitation(current_lines[matched_line_index], spoken_text)
+
+    next_page_index = page_index + 1
+    next_page_first_line = ""
+    next_page_score = 0.0
+    if next_page_index < len(pages) and pages[next_page_index]["lines"]:
+        next_page_first_line = pages[next_page_index]["lines"][0]
+        next_page_score = line_similarity(spoken_text, next_page_first_line)
+
+    if next_page_first_line and next_page_score >= 0.72 and next_page_score > best_match["current_line_score"] + 0.08:
+        next_comparison = compare_recitation(next_page_first_line, spoken_text)
+        return {
+            "success": True,
+            "status": "order_error",
+            "page_index": page_index,
+            "current_line_index": current_line_index,
+            "matched_page_index": next_page_index,
+            "matched_line_index": 0,
+            "expected_line": next_page_first_line,
+            "spoken_text": spoken_text,
+            "passed": False,
+            "char_results": next_comparison["char_results"],
+            "message": f"可能已背到下一简，第 {next_page_index + 1} 简第一句更接近当前输入。",
+            "title": result.title,
+            "author": result.author,
+        }
+
+    if matched_line_index != current_line_index:
+        return {
+            "success": True,
+            "status": "order_error",
+            "page_index": page_index,
+            "current_line_index": current_line_index,
+            "matched_page_index": page_index,
+            "matched_line_index": matched_line_index,
+            "expected_line": current_lines[matched_line_index],
+            "spoken_text": spoken_text,
+            "passed": False,
+            "char_results": comparison["char_results"],
+            "message": f"顺序可能有误，当前应为第 {current_line_index + 1} 句，输入内容更接近第 {matched_line_index + 1} 句。",
+            "title": result.title,
+            "author": result.author,
+        }
+
+    if comparison["passed"]:
+        status = "pass"
+        message = "本句通过"
+    else:
+        status = "partial_fail"
+        message = "存在错字或漏字"
+
+    return {
+        "success": True,
+        "status": status,
+        "page_index": page_index,
+        "current_line_index": current_line_index,
+        "matched_page_index": page_index,
+        "matched_line_index": matched_line_index,
+        "expected_line": current_lines[current_line_index],
+        "spoken_text": spoken_text,
+        "passed": comparison["passed"],
+        "char_results": comparison["char_results"],
+        "message": message,
+        "title": result.title,
+        "author": result.author,
+    }
+
+
 def parse_flag(value: str | None, default: bool = False) -> bool:
     if value is None:
         return default
@@ -1814,26 +2103,7 @@ def render_export_image_png(payload: dict, *, show_translation: bool, show_notes
 
 
 def build_payload(title: str, author: str = "", wait_for_enrichment: bool = False, force_refresh: bool = False, _sync_attempted: bool = False):
-    resolved_title = resolve_known_title_alias(title)
-    title_entry = database_entry_for(TEXTBOOK_KNOWLEDGE_BASE, resolved_title)
-    top500_title_entry = database_entry_for(TOP500_KNOWLEDGE_BASE, resolved_title)
-    lookup_author = (
-        str(author or "").strip()
-        or str(top500_title_entry.get("author", "")).strip()
-        or str(title_entry.get("author", "")).strip()
-    )
-    try:
-        result = lookup_preferred_same_title_result(resolved_title, lookup_author)
-        if not result:
-            result = LOOKUP_MODULE.lookup(resolved_title, lookup_author)
-    except Exception as exc:
-        result = lookup_from_registry(resolved_title, lookup_author)
-        if not result:
-            result = lookup_from_guwendao_search(resolved_title, lookup_author)
-        if not result:
-            if author:
-                raise LookupError(f"未找到作者为“{author}”的《{resolved_title}》。请检查作者写法，或留空作者后重新查询。") from exc
-            raise
+    _, result = resolve_lookup_result(title, author)
     supplements = SUPPLEMENTS.get(result.title, {})
     textbook_entry = database_entry_for(TEXTBOOK_KNOWLEDGE_BASE, result.title)
     general_entry = database_entry_for(GENERAL_ANNOTATION_BASE, result.title)
@@ -1955,6 +2225,12 @@ class AppHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/human-status":
             self.handle_human_status()
             return
+        if parsed.path == "/api/recite/layout":
+            if not self.request_is_human_verified():
+                self.write_json({"success": False, "error": "请先完成人机验证。"}, HTTPStatus.FORBIDDEN)
+                return
+            self.handle_recite_layout(parsed)
+            return
         if parsed.path == "/api/export-image":
             if not self.request_is_human_verified():
                 self.write_json({"error": "请先完成人机验证。"}, HTTPStatus.FORBIDDEN)
@@ -1967,7 +2243,7 @@ class AppHandler(SimpleHTTPRequestHandler):
                 return
             self.handle_lookup(parsed)
             return
-        if parsed.path == "/reader.html" and not self.request_is_human_verified():
+        if parsed.path in {"/reader.html", "/recite-scroll.html"} and not self.request_is_human_verified():
             self.redirect("/index.html")
             return
         if parsed.path == "/":
@@ -1978,6 +2254,12 @@ class AppHandler(SimpleHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path == "/api/human-verify":
             self.handle_human_verify()
+            return
+        if parsed.path == "/api/recite/check":
+            if not self.request_is_human_verified():
+                self.write_json({"success": False, "error": "请先完成人机验证。"}, HTTPStatus.FORBIDDEN)
+                return
+            self.handle_recite_check()
             return
         self.send_error(HTTPStatus.NOT_FOUND, "Not Found")
 
@@ -2015,6 +2297,66 @@ class AppHandler(SimpleHTTPRequestHandler):
             return
 
         self.write_json(payload, HTTPStatus.OK)
+
+    def handle_recite_layout(self, parsed):
+        params = parse_qs(parsed.query)
+        title = params.get("title", [""])[0].strip()
+        author = params.get("author", [""])[0].strip()
+
+        if not title:
+            self.write_json({"success": False, "error": "请输入题目。"}, HTTPStatus.BAD_REQUEST)
+            return
+
+        try:
+            payload = build_recite_layout_payload(title, author)
+        except Exception as exc:
+            self.write_json({"success": False, "error": str(exc)}, HTTPStatus.NOT_FOUND)
+            return
+
+        self.write_json(payload, HTTPStatus.OK)
+
+    def handle_recite_check(self):
+        try:
+            payload = self.read_json_body()
+        except ValueError as exc:
+            self.write_json({"success": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+
+        title = str(payload.get("title", "")).strip()
+        author = str(payload.get("author", "")).strip()
+        spoken_text = str(payload.get("spoken_text", "")).strip()
+        page_index_raw = payload.get("page_index", 0)
+        current_line_index_raw = payload.get("current_line_index", 0)
+
+        if not title:
+            self.write_json({"success": False, "error": "请输入题目。"}, HTTPStatus.BAD_REQUEST)
+            return
+        if not spoken_text:
+            self.write_json({"success": False, "error": "请输入背诵内容。"}, HTTPStatus.BAD_REQUEST)
+            return
+
+        try:
+            page_index = int(page_index_raw)
+        except (TypeError, ValueError):
+            self.write_json({"success": False, "error": "page_index 必须是整数。"}, HTTPStatus.BAD_REQUEST)
+            return
+
+        try:
+            current_line_index = int(current_line_index_raw)
+        except (TypeError, ValueError):
+            self.write_json({"success": False, "error": "current_line_index 必须是整数。"}, HTTPStatus.BAD_REQUEST)
+            return
+
+        try:
+            result = build_recite_check_payload(title, author, page_index, current_line_index, spoken_text)
+        except LookupError as exc:
+            self.write_json({"success": False, "error": str(exc)}, HTTPStatus.NOT_FOUND)
+            return
+        except ValueError as exc:
+            self.write_json({"success": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+
+        self.write_json(result, HTTPStatus.OK)
 
     def handle_export_image(self, parsed):
         params = parse_qs(parsed.query)
@@ -2059,6 +2401,16 @@ class AppHandler(SimpleHTTPRequestHandler):
             self.send_header(key, value)
         self.end_headers()
         self.wfile.write(raw)
+
+    def read_json_body(self):
+        content_length = int(self.headers.get("Content-Length", "0") or 0)
+        raw_body = self.rfile.read(content_length) if content_length > 0 else b""
+        if not raw_body:
+            return {}
+        try:
+            return json.loads(raw_body.decode("utf-8"))
+        except Exception as exc:
+            raise ValueError("请求体不是合法 JSON。") from exc
 
     def write_binary(self, payload: bytes, content_type: str, status, extra_headers=None):
         self.send_response(status)
