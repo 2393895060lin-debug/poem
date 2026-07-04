@@ -550,6 +550,20 @@ function syncExportButtonLabels() {
   }
 }
 
+function openReciteScrollPage() {
+  const title = (state.article?.title || document.getElementById("searchTitle").value || "").trim();
+  const author = (state.article?.author || document.getElementById("searchAuthor").value || "").trim();
+
+  if (!title) {
+    window.alert("请先输入题目并完成查询。");
+    document.getElementById("searchTitle").focus();
+    return;
+  }
+
+  const query = new URLSearchParams({ title, author });
+  window.location.href = `./recite-scroll.html?${query.toString()}`;
+}
+
 function renderPreviewSnapshot() {
   const host = document.getElementById("previewSnapshot");
   host.innerHTML = "";
@@ -1106,6 +1120,7 @@ function startReaderApp() {
     }
   });
   document.getElementById("previewPdfButton").addEventListener("click", openPreviewDialog);
+  document.getElementById("openReciteScrollButton").addEventListener("click", openReciteScrollPage);
   document.getElementById("closeDialogButton").addEventListener("click", () => {
     document.getElementById("pdfDialog").close();
   });
