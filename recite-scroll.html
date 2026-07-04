@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>竹简背诵</title>
+  <link rel="stylesheet" href="./human-verification.css" />
+  <link rel="stylesheet" href="./recite-scroll.css" />
+</head>
+<body>
+  <main class="scroll-page">
+    <section class="scroll-shell">
+      <header class="scroll-header">
+        <h1 id="scrollTitle" class="scroll-title">未选择作品</h1>
+        <div id="scrollAuthor" class="scroll-author">作者未提供</div>
+      </header>
+
+      <section class="scroll-stage" aria-label="竹简背诵区域">
+        <div id="scrollStatus" class="scroll-status" aria-live="polite" hidden></div>
+        <div id="bambooScroll" class="bamboo-scroll"></div>
+      </section>
+
+      <footer class="scroll-actions">
+        <button id="startReciteButton" class="scroll-action scroll-action-primary" type="button">开始背诵</button>
+        <button id="prevPageButton" class="scroll-action" type="button">上一简</button>
+        <button id="nextPageButton" class="scroll-action" type="button">下一简</button>
+        <button id="nextLineButton" class="scroll-action" type="button">下一句</button>
+        <button id="retryLineButton" class="scroll-action" type="button">重背本句</button>
+        <button id="showAnswerButton" class="scroll-action" type="button">显示答案</button>
+        <button id="backToReaderButton" class="scroll-action scroll-action-secondary" type="button">返回阅读页</button>
+      </footer>
+
+      <section class="manual-check-panel" aria-label="手动输入背诵检查">
+        <div id="scrollProgress" class="scroll-progress">第 0 简 / 共 0 简</div>
+        <div id="recognizedTextOutput" class="recognized-text-output">识别文本：暂未开始</div>
+        <div class="manual-check-note">备用输入：如果语音识别不可用，或识别文本不稳定，可手动输入本句进行检查。</div>
+        <div class="manual-check-row">
+          <input id="manualReciteInput" class="manual-recite-input" type="text" placeholder="手动输入当前这句背诵内容" autocomplete="off" />
+          <button id="checkReciteButton" class="scroll-action manual-check-button" type="button">检查本句</button>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <div id="humanVerificationOverlay" class="human-verification-overlay" aria-modal="true" role="dialog" aria-labelledby="humanVerificationTitle">
+    <div class="human-verification-card">
+      <h2 id="humanVerificationTitle" class="human-verification-title">访问前验证</h2>
+      <p class="human-verification-copy">为减少异常请求，进入竹简背诵页前需要先完成人机确认。</p>
+      <label class="human-verification-check" for="humanVerificationCheckbox">
+        <input id="humanVerificationCheckbox" type="checkbox" />
+        <span>我不是机器人</span>
+      </label>
+      <button id="humanVerificationButton" class="human-verification-action" type="button" disabled>继续访问</button>
+      <div id="humanVerificationMessage" class="human-verification-message"></div>
+    </div>
+  </div>
+
+  <script src="./human-verification.js"></script>
+  <script src="./recite-scroll.js"></script>
+</body>
+</html>
