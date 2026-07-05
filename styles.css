@@ -851,6 +851,50 @@ body.mobile-annotation-focus {
   white-space: nowrap;
 }
 
+.toolbar-recite-button {
+  height: 32px;
+  padding: 0 14px;
+  border: 1px solid rgba(109, 110, 81, 0.88);
+  border-radius: 999px;
+  background: linear-gradient(180deg, #76785a, #66684f);
+  color: #fffef7;
+  font-family: "Source Han Sans SC", "PingFang SC", sans-serif;
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+  box-shadow: 0 8px 18px rgba(88, 90, 66, 0.14);
+}
+
+.toolbar-recite-button:hover {
+  filter: brightness(1.04);
+}
+
+.toolbar-refresh-button {
+  height: 32px;
+  padding: 0 14px;
+  border: 1px solid rgba(150, 140, 112, 0.56);
+  border-radius: 999px;
+  background: rgba(247, 239, 221, 0.96);
+  color: #4d534f;
+  font-family: "Source Han Sans SC", "PingFang SC", sans-serif;
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.toolbar-refresh-button:hover {
+  background: rgba(240, 231, 210, 0.98);
+}
+
+.toolbar-refresh-button:disabled {
+  opacity: 0.58;
+  cursor: wait;
+}
+
+.toolbar-refresh-button-hidden {
+  display: none;
+}
+
 .back-home-link {
   display: inline-flex;
   align-items: center;
@@ -1394,6 +1438,7 @@ body.mobile-annotation-focus {
 
   .back-home-link,
   .toggle-row-compact,
+  .toolbar-recite-button,
   .annotation-mode-button,
   .annotation-clear-button {
     font-size: 12px;
