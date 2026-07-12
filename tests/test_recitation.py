@@ -2,7 +2,15 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from server import build_recite_check_payload, compare_recitation, is_public_static_path, normalize_text
+import server
+from server import (
+    build_recite_check_payload,
+    compare_recitation,
+    is_allowed_upstream_url,
+    is_public_static_path,
+    normalize_text,
+    rate_limit_retry_after,
+)
 
 
 class RecitationComparisonTests(unittest.TestCase):
@@ -65,6 +73,31 @@ class StaticFileAllowlistTests(unittest.TestCase):
         self.assertFalse(is_public_static_path("/server.py"))
         self.assertFalse(is_public_static_path("/textbook_knowledge_base.json"))
         self.assertFalse(is_public_static_path("/assets/../server.py"))
+
+
+class SecurityGuardTests(unittest.TestCase):
+    def setUp(self):
+        with server.rate_limit_lock:
+            server.rate_limit_windows.clear()
+        with server.verified_human_tokens_lock:
+            server.verified_human_tokens.clear()
+
+    def test_rate_limit_rejects_excess_requests(self):
+        self.assertEqual(rate_limit_retry_after("test", "198.51.100.7", 2, 60), 0)
+        self.assertEqual(rate_limit_retry_after("test", "198.51.100.7", 2, 60), 0)
+        self.assertGreater(rate_limit_retry_after("test", "198.51.100.7", 2, 60), 0)
+
+    def test_verification_token_store_is_bounded(self):
+        with patch("server.MAX_VERIFIED_HUMAN_TOKENS", 2):
+            server.issue_human_verification_token()
+            server.issue_human_verification_token()
+            server.issue_human_verification_token()
+        self.assertLessEqual(len(server.verified_human_tokens), 2)
+
+    def test_upstream_requests_are_https_and_allowlisted(self):
+        self.assertTrue(is_allowed_upstream_url("https://www.guwendao.net/search.aspx?value=%E6%9D%8E%E7%99%BD"))
+        self.assertFalse(is_allowed_upstream_url("http://www.guwendao.net/search.aspx"))
+        self.assertFalse(is_allowed_upstream_url("https://127.0.0.1/admin"))
 
 
 if __name__ == "__main__":

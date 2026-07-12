@@ -91,6 +91,16 @@ cloudflared tunnel --url http://127.0.0.1:8765
 | `POEM_UI_HOST` | 监听地址，云部署建议使用 `0.0.0.0` |
 | `POEM_DATA_DIR` | 缓存、导出文件与运行时数据目录 |
 | `POEM_HUMAN_VERIFICATION_TTL_SECONDS` | 人机验证有效期，默认 21600 秒 |
+| `POEM_MAX_SERVER_WORKERS` | 同时处理请求的上限，默认 32 |
+| `POEM_TRUST_PROXY_HEADERS` | 仅当可信反向代理会覆盖 `X-Forwarded-*` 时设为 `1` |
+| `POEM_FORCE_SECURE_COOKIES` | HTTPS 部署时设为 `1`，强制验证 Cookie 使用 `Secure` |
+
+### 公网部署安全
+
+- 不要把本机开发目录直接通过隧道长期暴露到公网；请使用 Docker 镜像或仅含运行文件的部署目录。
+- 将服务置于 Cloudflare、Nginx 或 Caddy 等 HTTPS 反向代理之后，并在边缘层启用限速、连接超时和 WAF。
+- 内置的“访问验证”是会话门槛，不是 CAPTCHA；若需要阻挡机器人，请在反向代理或应用层接入 Cloudflare Turnstile、hCaptcha 等服务。
+- 公网 HTTPS 环境请设置 `POEM_FORCE_SECURE_COOKIES=1`；使用可信代理时再设置 `POEM_TRUST_PROXY_HEADERS=1`。
 
 ## 最近更新
 
@@ -102,7 +112,7 @@ cloudflared tunnel --url http://127.0.0.1:8765
 - 修复云环境下的端口读取与 `0.0.0.0` 监听问题，部署后可直接对外访问。
 - 内置 `lookup_classical_text.py`，移除对本机 `~/.codex/skills/...` 路径的运行时依赖。
 - 引入 `top500_knowledge_base.json` 与归档校验数据，补足常见诗词内容覆盖。
-- 增加访问前人机验证，降低异常请求对查询接口的影响。
+- 增加访问会话门槛、接口限速、并发与缓存上限，降低异常请求对查询接口的影响；公网仍应在边缘层配置真实 CAPTCHA/WAF。
 
 ## 许可与说明
 

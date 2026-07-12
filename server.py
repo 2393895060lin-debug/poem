@@ -12,16 +12,17 @@ import sys
 import threading
 import time
 import unicodedata
+from collections import OrderedDict, deque
 from difflib import SequenceMatcher
 from functools import lru_cache
 from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from queue import Queue
+from queue import Full, Queue
 from datetime import datetime
 from urllib.parse import parse_qs, quote, unquote, urlparse
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from PIL import Image, ImageDraw, ImageFont
 from pypinyin import Style, pinyin
@@ -55,6 +56,18 @@ SYNC_ENRICH_TIMEOUT_SECONDS = 9.5
 SYNC_ENRICH_REQUEST_TIMEOUT_SECONDS = 3.0
 HUMAN_VERIFICATION_COOKIE = "poem_human_verified"
 HUMAN_VERIFICATION_TTL_SECONDS = int(os.getenv("POEM_HUMAN_VERIFICATION_TTL_SECONDS", "21600"))
+MAX_VERIFIED_HUMAN_TOKENS = int(os.getenv("POEM_MAX_VERIFIED_HUMAN_TOKENS", "4096"))
+MAX_RATE_LIMIT_CLIENTS = int(os.getenv("POEM_MAX_RATE_LIMIT_CLIENTS", "4096"))
+MAX_ENRICHMENT_QUEUE_SIZE = int(os.getenv("POEM_MAX_ENRICHMENT_QUEUE_SIZE", "48"))
+MAX_ENRICHMENT_STATE_ENTRIES = int(os.getenv("POEM_MAX_ENRICHMENT_STATE_ENTRIES", "256"))
+MAX_AUTO_SUPPLEMENT_ENTRIES = int(os.getenv("POEM_MAX_AUTO_SUPPLEMENT_ENTRIES", "1000"))
+MAX_UPSTREAM_RESPONSE_BYTES = int(os.getenv("POEM_MAX_UPSTREAM_RESPONSE_BYTES", str(2 * 1024 * 1024)))
+MAX_EXPORT_IMAGE_PIXELS = int(os.getenv("POEM_MAX_EXPORT_IMAGE_PIXELS", str(1600 * 12000)))
+REQUEST_SOCKET_TIMEOUT_SECONDS = float(os.getenv("POEM_REQUEST_SOCKET_TIMEOUT_SECONDS", "15"))
+MAX_SERVER_WORKERS = int(os.getenv("POEM_MAX_SERVER_WORKERS", "32"))
+TRUST_PROXY_HEADERS = os.getenv("POEM_TRUST_PROXY_HEADERS", "").strip().lower() in {"1", "true", "yes"}
+FORCE_SECURE_COOKIES = os.getenv("POEM_FORCE_SECURE_COOKIES", "").strip().lower() in {"1", "true", "yes"}
+ALLOWED_UPSTREAM_HOSTS = {"www.gushiwen.cn", "www.guwendao.net", "m.guwendao.net"}
 AUTHOR_FAME_SCORES = {
     "李白": 120,
     "杜甫": 118,
@@ -101,6 +114,8 @@ POPULAR_WORK_SCORES = {
 }
 verified_human_tokens: dict[str, float] = {}
 verified_human_tokens_lock = threading.Lock()
+rate_limit_lock = threading.Lock()
+rate_limit_windows: OrderedDict[tuple[str, str], deque[float]] = OrderedDict()
 PUNCTUATION_MARKS = {"，", "。", "；", "：", "？", "！", "“", "”", "〔", "〕", "（", "）", "《", "》", "、"}
 INLINE_SYMBOLS = {"〔", "〕", "（", "）", "《", "》", "[", "]", "【", "】"}
 RECITE_LAYOUT_SPLIT_RE = re.compile(r"[\s\u3000,，.。?？!！;；:：、]+")
@@ -177,6 +192,8 @@ def issue_human_verification_token() -> tuple[str, int]:
     expires_at = now + HUMAN_VERIFICATION_TTL_SECONDS
     token = secrets.token_urlsafe(24)
     with verified_human_tokens_lock:
+        while len(verified_human_tokens) >= MAX_VERIFIED_HUMAN_TOKENS:
+            verified_human_tokens.pop(next(iter(verified_human_tokens)), None)
         verified_human_tokens[token] = expires_at
     return token, HUMAN_VERIFICATION_TTL_SECONDS
 
@@ -202,6 +219,32 @@ def is_human_verified(cookie_header: str | None) -> bool:
             verified_human_tokens.pop(token, None)
             return False
     return True
+
+
+def rate_limit_retry_after(bucket: str, client_ip: str, limit: int, window_seconds: int = 60) -> int:
+    """Return 0 when a request is allowed, otherwise the wait time in seconds.
+
+    Storage is deliberately bounded: hostile clients cannot create unlimited rate-limit
+    records merely by varying their source address.
+    """
+    now = time.monotonic()
+    key = (bucket, client_ip or "unknown")
+    with rate_limit_lock:
+        timestamps = rate_limit_windows.get(key)
+        if timestamps is None:
+            while len(rate_limit_windows) >= MAX_RATE_LIMIT_CLIENTS:
+                rate_limit_windows.popitem(last=False)
+            timestamps = deque()
+            rate_limit_windows[key] = timestamps
+        else:
+            rate_limit_windows.move_to_end(key)
+        cutoff = now - window_seconds
+        while timestamps and timestamps[0] <= cutoff:
+            timestamps.popleft()
+        if len(timestamps) >= limit:
+            return max(1, int(window_seconds - (now - timestamps[0])) + 1)
+        timestamps.append(now)
+    return 0
 
 SUPPLEMENTS = {
     "岳阳楼记": {
@@ -329,8 +372,8 @@ TEXTBOOK_SOURCE_REGISTRY = json.loads(TEXTBOOK_SOURCE_REGISTRY_PATH.read_text(en
 ensure_runtime_dirs()
 AUTO_SUPPLEMENT_CACHE = load_json_object(AUTO_SUPPLEMENT_CACHE_PATH, {"works": {}})
 AUTO_SUPPLEMENT_LOCK = threading.Lock()
-ENRICHMENT_QUEUE = Queue()
-ENRICHMENT_STATE = {}
+ENRICHMENT_QUEUE = Queue(maxsize=MAX_ENRICHMENT_QUEUE_SIZE)
+ENRICHMENT_STATE: OrderedDict[str, dict] = OrderedDict()
 ENRICHMENT_WORKER_STARTED = False
 
 
@@ -396,10 +439,30 @@ def work_cache_key(title: str, author: str) -> str:
     return f"{normalize_key(title)}::{normalize_key(author)}"
 
 
+def is_allowed_upstream_url(url: str) -> bool:
+    parsed = urlparse(url)
+    return parsed.scheme == "https" and (parsed.hostname or "").lower() in ALLOWED_UPSTREAM_HOSTS
+
+
+class SafeRedirectHandler(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not is_allowed_upstream_url(newurl):
+            raise ValueError("上游服务跳转到了不受信任的地址。")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+SAFE_URL_OPENER = build_opener(SafeRedirectHandler())
+
+
 def fetch_url_text(url: str, user_agent: str = DEFAULT_USER_AGENT, timeout: float = 20):
+    if not is_allowed_upstream_url(url):
+        raise ValueError("不允许请求该上游地址。")
     request = Request(url, headers={"User-Agent": user_agent})
-    with urlopen(request, timeout=timeout) as response:
-        return response.read().decode("utf-8", "ignore")
+    with SAFE_URL_OPENER.open(request, timeout=timeout) as response:
+        raw = response.read(MAX_UPSTREAM_RESPONSE_BYTES + 1)
+        if len(raw) > MAX_UPSTREAM_RESPONSE_BYTES:
+            raise ValueError("上游响应过大，已中止处理。")
+        return raw.decode("utf-8", "ignore")
 
 
 def fetch_json_url(url: str, timeout: float = 20):
@@ -431,6 +494,9 @@ def store_auto_supplement_entry(title: str, author: str, entry: dict):
             merged["translation"] = normalize_text_list(entry.get("translation", []))
         if entry.get("notes"):
             merged["notes"] = normalize_notes(entry.get("notes", []))
+        works.pop(key, None)
+        while len(works) >= MAX_AUTO_SUPPLEMENT_ENTRIES:
+            works.pop(next(iter(works)), None)
         works[key] = merged
         write_json_file(AUTO_SUPPLEMENT_CACHE_PATH, AUTO_SUPPLEMENT_CACHE)
 
@@ -1136,6 +1202,9 @@ def ensure_enrichment_worker():
 
 def update_enrichment_state(key: str, status: str, **extra):
     with AUTO_SUPPLEMENT_LOCK:
+        ENRICHMENT_STATE.pop(key, None)
+        while len(ENRICHMENT_STATE) >= MAX_ENRICHMENT_STATE_ENTRIES:
+            ENRICHMENT_STATE.popitem(last=False)
         ENRICHMENT_STATE[key] = {
             "status": status,
             "updatedAt": datetime.now().isoformat(timespec="seconds"),
@@ -1203,16 +1272,23 @@ def schedule_enrichment(title: str, author: str, content_lines: list[str], needs
         needsTranslation=needs_translation,
         needsNotes=needs_notes,
     )
-    ENRICHMENT_QUEUE.put(
-        {
-            "key": key,
-            "title": title,
-            "author": author,
-            "contentLines": list(content_lines),
-            "needsTranslation": needs_translation,
-            "needsNotes": needs_notes,
-        }
-    )
+    try:
+        ENRICHMENT_QUEUE.put_nowait(
+            {
+                "key": key,
+                "title": title,
+                "author": author,
+                "contentLines": list(content_lines),
+                "needsTranslation": needs_translation,
+                "needsNotes": needs_notes,
+            }
+        )
+    except Full:
+        update_enrichment_state(
+            key,
+            "busy",
+            message="后台补全任务较多，请稍后重新查询。",
+        )
     return get_enrichment_state(title, author)
 
 
@@ -2252,6 +2328,8 @@ def render_export_image_png(payload: dict, *, show_translation: bool, show_notes
     measuring_canvas = Image.new("RGB", (page_width, 64), page_background)
     measuring_draw = ImageDraw.Draw(measuring_canvas)
     image_height = max(900, paint_sheet(measuring_draw, paint=False))
+    if page_width * image_height > MAX_EXPORT_IMAGE_PIXELS:
+        raise ValueError("导出内容过长，请关闭部分译文或注释后重试。")
 
     image = Image.new("RGB", (page_width, image_height), page_background)
     draw = ImageDraw.Draw(image)
@@ -2373,6 +2451,7 @@ def build_payload(title: str, author: str = "", wait_for_enrichment: bool = Fals
 class AppHandler(SimpleHTTPRequestHandler):
     server_version = "PoemServer/1.0"
     sys_version = ""
+    protocol_version = "HTTP/1.1"
     extensions_map = {
         **SimpleHTTPRequestHandler.extensions_map,
         ".css": "text/css; charset=utf-8",
@@ -2382,6 +2461,42 @@ class AppHandler(SimpleHTTPRequestHandler):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(ROOT), **kwargs)
+
+    def setup(self):
+        super().setup()
+        self.connection.settimeout(REQUEST_SOCKET_TIMEOUT_SECONDS)
+
+    def client_ip(self) -> str:
+        if TRUST_PROXY_HEADERS:
+            forwarded_for = self.headers.get("X-Forwarded-For", "").split(",", 1)[0].strip()
+            if forwarded_for:
+                return forwarded_for
+        return str(self.client_address[0])
+
+    def require_rate_limit(self, bucket: str, limit: int, window_seconds: int = 60) -> bool:
+        retry_after = rate_limit_retry_after(bucket, self.client_ip(), limit, window_seconds)
+        if not retry_after:
+            return True
+        self.write_json(
+            {"error": "请求过于频繁，请稍后再试。"},
+            HTTPStatus.TOO_MANY_REQUESTS,
+            extra_headers={"Retry-After": str(retry_after)},
+        )
+        return False
+
+    def request_has_same_origin(self) -> bool:
+        origin = self.headers.get("Origin", "").strip()
+        if not origin:
+            return self.client_ip() in {"127.0.0.1", "::1"}
+        parsed_origin = urlparse(origin)
+        host = self.headers.get("Host", "").strip().lower()
+        return parsed_origin.scheme in {"http", "https"} and parsed_origin.netloc.lower() == host
+
+    def require_same_origin_post(self) -> bool:
+        if self.request_has_same_origin():
+            return True
+        self.write_json({"error": "请求来源不受信任。"}, HTTPStatus.FORBIDDEN)
+        return False
 
     def end_headers(self):
         parsed_path = urlparse(self.path).path
@@ -2407,17 +2522,23 @@ class AppHandler(SimpleHTTPRequestHandler):
             if not self.request_is_human_verified():
                 self.write_json({"success": False, "error": "请先完成人机验证。"}, HTTPStatus.FORBIDDEN)
                 return
+            if not self.require_rate_limit("recite-layout", 30):
+                return
             self.handle_recite_layout(parsed)
             return
         if parsed.path == "/api/export-image":
             if not self.request_is_human_verified():
                 self.write_json({"error": "请先完成人机验证。"}, HTTPStatus.FORBIDDEN)
                 return
+            if not self.require_rate_limit("export-image", 8):
+                return
             self.handle_export_image(parsed)
             return
         if parsed.path == "/api/lookup":
             if not self.request_is_human_verified():
                 self.write_json({"error": "请先完成人机验证。"}, HTTPStatus.FORBIDDEN)
+                return
+            if not self.require_rate_limit("lookup", 30):
                 return
             self.handle_lookup(parsed)
             return
@@ -2433,12 +2554,26 @@ class AppHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         parsed = urlparse(self.path)
+        if not self.require_same_origin_post():
+            return
         if parsed.path == "/api/human-verify":
+            if not self.require_rate_limit("human-verify", 8):
+                return
             self.handle_human_verify()
+            return
+        if parsed.path == "/api/lookup/refresh":
+            if not self.request_is_human_verified():
+                self.write_json({"error": "请先完成人机验证。"}, HTTPStatus.FORBIDDEN)
+                return
+            if not self.require_rate_limit("lookup-refresh", 3):
+                return
+            self.handle_lookup_refresh()
             return
         if parsed.path == "/api/recite/check":
             if not self.request_is_human_verified():
                 self.write_json({"success": False, "error": "请先完成人机验证。"}, HTTPStatus.FORBIDDEN)
+                return
+            if not self.require_rate_limit("recite-check", 60):
                 return
             self.handle_recite_check()
             return
@@ -2465,7 +2600,7 @@ class AppHandler(SimpleHTTPRequestHandler):
     def handle_human_verify(self):
         token, max_age = issue_human_verification_token()
         forwarded_proto = self.headers.get("X-Forwarded-Proto", "").split(",", 1)[0].strip().lower()
-        secure_attribute = "; Secure" if forwarded_proto == "https" else ""
+        secure_attribute = "; Secure" if FORCE_SECURE_COOKIES or (TRUST_PROXY_HEADERS and forwarded_proto == "https") else ""
         self.write_json(
             {"verified": True, "maxAge": max_age},
             HTTPStatus.OK,
@@ -2481,6 +2616,10 @@ class AppHandler(SimpleHTTPRequestHandler):
         wait_for_enrichment = params.get("waitForEnrichment", ["0"])[0].strip() in {"1", "true", "yes"}
         force_refresh = params.get("forceRefresh", ["0"])[0].strip() in {"1", "true", "yes"}
 
+        if force_refresh:
+            self.write_json({"error": "刷新请求必须使用 POST。"}, HTTPStatus.METHOD_NOT_ALLOWED)
+            return
+
         if not title:
             self.write_json({"error": "请输入题目。"}, HTTPStatus.BAD_REQUEST)
             return
@@ -2490,10 +2629,31 @@ class AppHandler(SimpleHTTPRequestHandler):
 
         try:
             payload = build_payload(title, author, wait_for_enrichment=wait_for_enrichment, force_refresh=force_refresh)
-        except Exception as exc:
-            self.write_json({"error": str(exc)}, HTTPStatus.NOT_FOUND)
+        except Exception:
+            self.write_json({"error": "未找到匹配的作品，请检查题目和作者。"}, HTTPStatus.NOT_FOUND)
             return
 
+        self.write_json(payload, HTTPStatus.OK)
+
+    def handle_lookup_refresh(self):
+        try:
+            request_payload = self.read_json_body()
+        except ValueError as exc:
+            self.write_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        title = str(request_payload.get("title", "")).strip()
+        author = str(request_payload.get("author", "")).strip()
+        if not title:
+            self.write_json({"error": "请输入题目。"}, HTTPStatus.BAD_REQUEST)
+            return
+        if len(title) > 120 or len(author) > 80:
+            self.write_json({"error": "输入内容过长。"}, HTTPStatus.BAD_REQUEST)
+            return
+        try:
+            payload = build_payload(title, author, wait_for_enrichment=True, force_refresh=True)
+        except Exception:
+            self.write_json({"error": "刷新失败，请稍后重试。"}, HTTPStatus.BAD_GATEWAY)
+            return
         self.write_json(payload, HTTPStatus.OK)
 
     def handle_recite_layout(self, parsed):
@@ -2510,8 +2670,8 @@ class AppHandler(SimpleHTTPRequestHandler):
 
         try:
             payload = build_recite_layout_payload(title, author)
-        except Exception as exc:
-            self.write_json({"success": False, "error": str(exc)}, HTTPStatus.NOT_FOUND)
+        except Exception:
+            self.write_json({"success": False, "error": "未找到匹配的作品，请检查题目和作者。"}, HTTPStatus.NOT_FOUND)
             return
 
         self.write_json(payload, HTTPStatus.OK)
@@ -2556,11 +2716,11 @@ class AppHandler(SimpleHTTPRequestHandler):
 
         try:
             result = build_recite_check_payload(title, author, page_index, current_line_index, spoken_text, source=source)
-        except LookupError as exc:
-            self.write_json({"success": False, "error": str(exc)}, HTTPStatus.NOT_FOUND)
+        except LookupError:
+            self.write_json({"success": False, "error": "未找到匹配的作品，请检查题目和作者。"}, HTTPStatus.NOT_FOUND)
             return
-        except ValueError as exc:
-            self.write_json({"success": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)
+        except ValueError:
+            self.write_json({"success": False, "error": "背诵参数不正确。"}, HTTPStatus.BAD_REQUEST)
             return
 
         self.write_json(result, HTTPStatus.OK)
@@ -2588,8 +2748,8 @@ class AppHandler(SimpleHTTPRequestHandler):
                 show_notes=show_notes,
                 show_pinyin=show_pinyin,
             )
-        except Exception as exc:
-            self.write_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+        except Exception:
+            self.write_json({"error": "图片生成失败，请稍后重试。"}, HTTPStatus.BAD_REQUEST)
             return
 
         file_name = sanitize_download_name(payload.get("title") or title)
@@ -2639,11 +2799,49 @@ class AppHandler(SimpleHTTPRequestHandler):
         self.end_headers()
 
 
+class LimitedThreadingHTTPServer(ThreadingHTTPServer):
+    """Threading HTTP server with a hard cap on active request handlers."""
+
+    daemon_threads = True
+    block_on_close = False
+    request_queue_size = 64
+
+    def __init__(self, server_address, request_handler_class, max_workers: int = MAX_SERVER_WORKERS):
+        self._request_slots = threading.BoundedSemaphore(max(1, max_workers))
+        super().__init__(server_address, request_handler_class)
+
+    def process_request(self, request, client_address):
+        if not self._request_slots.acquire(blocking=False):
+            try:
+                request.sendall(
+                    b"HTTP/1.1 503 Service Unavailable\r\n"
+                    b"Connection: close\r\n"
+                    b"Content-Length: 0\r\n"
+                    b"Retry-After: 5\r\n\r\n"
+                )
+            except OSError:
+                pass
+            finally:
+                self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except Exception:
+            self._request_slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._request_slots.release()
+
+
 def main():
     host = os.getenv("POEM_UI_HOST", "0.0.0.0").strip() or "0.0.0.0"
     port = int(os.getenv("PORT") or os.getenv("POEM_UI_PORT", "8765"))
     ensure_enrichment_worker()
-    server = ThreadingHTTPServer((host, port), AppHandler)
+    server = LimitedThreadingHTTPServer((host, port), AppHandler)
     display_host = "127.0.0.1" if host == "0.0.0.0" else host
     print(f"http://{display_host}:{port}")
     server.serve_forever()

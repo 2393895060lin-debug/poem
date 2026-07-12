@@ -846,14 +846,26 @@ function downloadPdf() {
 }
 
 async function fetchArticle(title, author, options = {}) {
+  if (options.forceRefresh) {
+    const response = await fetch("/api/lookup/refresh", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title, author }),
+      signal: options.signal
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.error || (response.status === 403 ? "请先完成人机验证。" : "刷新失败"));
+    }
+    return payload;
+  }
+
   const query = new URLSearchParams({
     title,
     author,
-    waitForEnrichment: options.forceRefresh ? "1" : "0"
+    waitForEnrichment: "0"
   });
-  if (options.forceRefresh) {
-    query.set("forceRefresh", "1");
-  }
   const response = await fetch(`/api/lookup?${query.toString()}`, { signal: options.signal });
   const payload = await response.json();
   if (!response.ok) {
