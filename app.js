@@ -21,6 +21,8 @@ const toggleTargets = {
   togglePinyin: "articleCanvas"
 };
 const annotationHelpStorageKey = "poem_annotation_help_seen_v1";
+const recentWorksStorageKey = "poem_recent_works_v1";
+const favoritesStorageKey = "poem_favorites_v1";
 let activeStroke = null;
 let activeStrokePointerId = null;
 const touchPointers = new Map();
@@ -29,6 +31,9 @@ let removeMobileTouchGuards = null;
 let touchPanFrameId = 0;
 let pageScrollLockY = 0;
 let deferredRenderTimer = 0;
+let activeSearchController = null;
+let activeSearchRequestId = 0;
+let transientStatusTimer = 0;
 
 function escapeHtml(value) {
   return String(value)
@@ -44,6 +49,33 @@ function escapeSvg(value) {
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;");
+}
+
+function safeExternalUrl(value) {
+  try {
+    const url = new URL(String(value || ""), window.location.origin);
+    return ["http:", "https:"].includes(url.protocol) ? url.href : "#";
+  } catch (_error) {
+    return "#";
+  }
+}
+
+function readStoredList(key) {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(key) || "[]");
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (error) {
+    console.warn(`Failed to read ${key}.`, error);
+    return [];
+  }
+}
+
+function writeStoredList(key, value) {
+  try {
+    window.localStorage.setItem(key, JSON.stringify(value));
+  } catch (error) {
+    console.warn(`Failed to write ${key}.`, error);
+  }
 }
 
 function shouldHidePinyin(char) {
@@ -71,7 +103,7 @@ function formatPreviewMeta(article) {
 function mountHeader(article) {
   createGridCells(article.title.split(""), "title-cell", document.getElementById("titleGrid"));
   document.getElementById("authorPinyin").innerHTML = article.authorPinyin
-    .map((item) => `<span>${inlineSymbols.has(item) ? "" : item}</span>`)
+    .map((item) => `<span>${inlineSymbols.has(item) ? "" : escapeHtml(item)}</span>`)
     .join("");
   createGridCells(article.authorDisplay, "author-cell", document.getElementById("authorGrid"));
   document.title = `${article.title} - 古诗文排版查询`;
@@ -105,10 +137,11 @@ function resetAnnotations() {
 }
 
 function isMobileViewport() {
-  const isCompactWidth = window.matchMedia("(max-width: 820px)").matches;
-  const isCompactTouchLayout = ((navigator.maxTouchPoints || 0) > 0 || window.matchMedia("(hover: none) and (pointer: coarse)").matches)
-    && window.innerWidth <= 1180;
-  return isCompactWidth || isCompactTouchLayout;
+  return window.matchMedia("(max-width: 900px)").matches;
+}
+
+function hasTouchInput() {
+  return (navigator.maxTouchPoints || 0) > 0 || window.matchMedia("(hover: none) and (pointer: coarse)").matches;
 }
 
 function rememberAnnotationHelpShown() {
@@ -120,7 +153,7 @@ function rememberAnnotationHelpShown() {
 }
 
 function maybeShowAnnotationHelp() {
-  if (!isMobileViewport()) return;
+  if (!hasTouchInput()) return;
   try {
     if (window.localStorage.getItem(annotationHelpStorageKey) === "1") {
       return;
@@ -189,20 +222,27 @@ function createNoteGaps(unit) {
 
 function renderArticle() {
   const articleCanvas = document.getElementById("articleCanvas");
-  articleCanvas.innerHTML = "";
+  articleCanvas.replaceChildren();
+
+  function renderEmptyState(message, isError = false) {
+    const empty = document.createElement("div");
+    empty.className = `empty-state${isError ? " empty-state-error" : ""}`;
+    empty.textContent = message;
+    articleCanvas.appendChild(empty);
+  }
 
   if (state.loading) {
-    articleCanvas.innerHTML = `<div class="empty-state">正在查询并排版中...</div>`;
+    renderEmptyState("正在查询并排版中...");
     return;
   }
 
   if (state.error) {
-    articleCanvas.innerHTML = `<div class="empty-state empty-state-error">${state.error}</div>`;
+    renderEmptyState(state.error, true);
     return;
   }
 
   if (!state.article) {
-    articleCanvas.innerHTML = `<div class="empty-state">输入题目后开始排版。</div>`;
+    renderEmptyState("输入题目后开始排版。");
     return;
   }
 
@@ -225,12 +265,15 @@ function renderArticle() {
 
 function renderNoteEntries(items) {
   return items
-    .map((item) => `
-      <div class="note-entry" data-note-index="${item.index}">
-        <button class="note-index" type="button" data-note-index="${item.index}" title="跳回原文第 ${item.index} 处注释">${item.index}</button>
-        <div class="note-copy"><span class="note-term">${item.term}</span>${item.term ? "：" : ""}${item.text}</div>
+    .map((item) => {
+      const safeIndex = escapeHtml(item.index);
+      return `
+      <div class="note-entry" data-note-index="${safeIndex}">
+        <button class="note-index" type="button" data-note-index="${safeIndex}" title="跳回原文第 ${safeIndex} 处注释">${safeIndex}</button>
+        <div class="note-copy"><span class="note-term">${escapeHtml(item.term || "")}</span>${item.term ? "：" : ""}${escapeHtml(item.text || "")}</div>
       </div>
-    `)
+    `;
+    })
     .join("");
 }
 
@@ -243,7 +286,7 @@ function renderNoteGroups(article) {
   return groups
     .map((group) => `
       <section class="note-group">
-        <div class="note-group-title">${group.label}</div>
+        <div class="note-group-title">${escapeHtml(group.label || "")}</div>
         <div class="note-group-list">
           ${renderNoteEntries(group.items)}
         </div>
@@ -276,7 +319,7 @@ function fillSupplementBody() {
       <div class="reference-link-list">
         ${(article.translationReferences || [])
           .map((item) => `
-            <a class="reference-link-card" href="${item.url}" target="_blank" rel="noreferrer">
+            <a class="reference-link-card" href="${escapeHtml(safeExternalUrl(item.url))}" target="_blank" rel="noreferrer">
               <div class="reference-link-title">${escapeHtml(item.label)}</div>
               <div class="reference-link-copy">${escapeHtml(item.description)}</div>
             </a>
@@ -294,7 +337,7 @@ function fillSupplementBody() {
     `;
   document.getElementById("recitationBody").innerHTML = (article.recitationReferences || [])
     .map((item) => `
-      <a class="recitation-item" href="${item.url}" target="_blank" rel="noreferrer">
+      <a class="recitation-item" href="${escapeHtml(safeExternalUrl(item.url))}" target="_blank" rel="noreferrer">
         <div class="recitation-item-title">${escapeHtml(item.label)}</div>
         <div class="recitation-item-copy">${escapeHtml(item.description)}</div>
       </a>
@@ -406,8 +449,8 @@ function buildPrintablePreview() {
   const authorWrap = document.createElement("div");
   authorWrap.className = "author-stack";
   authorWrap.innerHTML = `
-    <div class="author-pinyin">${article.authorPinyin.map((item) => `<span>${inlineSymbols.has(item) ? "" : item}</span>`).join("")}</div>
-    <div class="author-grid">${article.authorDisplay.map((item) => `<div class="author-cell">${item}</div>`).join("")}</div>
+    <div class="author-pinyin">${article.authorPinyin.map((item) => `<span>${inlineSymbols.has(item) ? "" : escapeHtml(item)}</span>`).join("")}</div>
+    <div class="author-grid">${article.authorDisplay.map((item) => `<div class="author-cell">${escapeHtml(item)}</div>`).join("")}</div>
   `;
 
   const articleCanvas = document.createElement("section");
@@ -427,7 +470,7 @@ function buildPrintablePreview() {
   if (state.showTranslation && article.translation.length) {
     const section = document.createElement("section");
     section.className = "supplement-card";
-    section.innerHTML = `<div class="section-kicker">译文</div><div class="supplement-body">${article.translation.map((item) => `<p>${item}</p>`).join("")}</div>`;
+    section.innerHTML = `<div class="section-kicker">译文</div><div class="supplement-body">${article.translation.map((item) => `<p>${escapeHtml(item)}</p>`).join("")}</div>`;
     sheet.appendChild(section);
   }
 
@@ -442,7 +485,7 @@ function buildPrintablePreview() {
 }
 
 function shouldUseImageExport() {
-  return isMobileViewport() && (navigator.maxTouchPoints || 0) > 0;
+  return hasTouchInput() && window.matchMedia("(max-width: 1180px)").matches;
 }
 
 function getExportFileName(extension) {
@@ -550,6 +593,89 @@ function syncExportButtonLabels() {
   }
 }
 
+function getWorkIdentity(work) {
+  return `${String(work?.title || "").trim()}::${String(work?.author || "").trim()}`;
+}
+
+function toStoredWork(article) {
+  return {
+    title: String(article?.title || "").trim(),
+    author: String(article?.author || "").trim(),
+    dynasty: String(article?.dynasty || "").trim(),
+    updatedAt: new Date().toISOString()
+  };
+}
+
+function recordRecentWork(article) {
+  const work = toStoredWork(article);
+  if (!work.title) return;
+  const identity = getWorkIdentity(work);
+  const items = readStoredList(recentWorksStorageKey).filter((item) => getWorkIdentity(item) !== identity);
+  writeStoredList(recentWorksStorageKey, [work, ...items].slice(0, 20));
+}
+
+function isCurrentArticleFavorite() {
+  if (!state.article) return false;
+  const identity = getWorkIdentity(state.article);
+  return readStoredList(favoritesStorageKey).some((item) => getWorkIdentity(item) === identity);
+}
+
+function syncArticleActions() {
+  const favoriteButton = document.getElementById("favoriteArticleButton");
+  const shareButton = document.getElementById("shareArticleButton");
+  if (!favoriteButton || !shareButton) return;
+  const hasArticle = Boolean(state.article && !state.loading);
+  const favorite = hasArticle && isCurrentArticleFavorite();
+  favoriteButton.disabled = !hasArticle;
+  shareButton.disabled = !hasArticle;
+  favoriteButton.setAttribute("aria-pressed", String(favorite));
+  favoriteButton.textContent = favorite ? "已收藏" : "收藏";
+}
+
+function showTransientStatus(message) {
+  window.clearTimeout(transientStatusTimer);
+  document.getElementById("queryStatus").textContent = message;
+  transientStatusTimer = window.setTimeout(() => {
+    transientStatusTimer = 0;
+    renderStatus();
+  }, 1800);
+}
+
+function toggleFavoriteArticle() {
+  if (!state.article) return;
+  const identity = getWorkIdentity(state.article);
+  const favorites = readStoredList(favoritesStorageKey);
+  const exists = favorites.some((item) => getWorkIdentity(item) === identity);
+  const next = exists
+    ? favorites.filter((item) => getWorkIdentity(item) !== identity)
+    : [toStoredWork(state.article), ...favorites].slice(0, 50);
+  writeStoredList(favoritesStorageKey, next);
+  syncArticleActions();
+  showTransientStatus(exists ? "已取消收藏" : "已加入收藏");
+}
+
+async function shareArticle() {
+  if (!state.article) return;
+  const shareData = {
+    title: `${state.article.title} · 诗境`,
+    text: `${state.article.title}${state.article.author ? ` · ${state.article.author}` : ""}`,
+    url: window.location.href
+  };
+  try {
+    if (navigator.share) {
+      await navigator.share(shareData);
+      showTransientStatus("分享面板已打开");
+      return;
+    }
+    await navigator.clipboard.writeText(window.location.href);
+    showTransientStatus("链接已复制");
+  } catch (error) {
+    if (error?.name !== "AbortError") {
+      window.prompt("复制这个链接分享作品：", window.location.href);
+    }
+  }
+}
+
 function openReciteScrollPage() {
   const title = (state.article?.title || document.getElementById("searchTitle").value || "").trim();
   const author = (state.article?.author || document.getElementById("searchAuthor").value || "").trim();
@@ -572,8 +698,8 @@ function renderPreviewSnapshot() {
   previewHeader.className = "preview-header";
   previewHeader.innerHTML = `
     <div class="preview-topline"></div>
-    <div class="preview-title">${state.article ? state.article.title : "古诗文排版预览"}</div>
-    <div class="preview-meta">${formatPreviewMeta(state.article)}</div>
+    <div class="preview-title">${escapeHtml(state.article ? state.article.title : "古诗文排版预览")}</div>
+    <div class="preview-meta">${escapeHtml(formatPreviewMeta(state.article))}</div>
   `;
 
   const previewBody = document.createElement("div");
@@ -706,7 +832,7 @@ function downloadPdf() {
     <html lang="zh-CN">
     <head>
       <meta charset="UTF-8" />
-      <title>${state.article ? state.article.title : "古文排版"} PDF 预览</title>
+      <title>${escapeHtml(state.article ? state.article.title : "古文排版")} PDF 预览</title>
       ${styles}
     </head>
     <body>
@@ -723,12 +849,12 @@ async function fetchArticle(title, author, options = {}) {
   const query = new URLSearchParams({
     title,
     author,
-    waitForEnrichment: "1"
+    waitForEnrichment: options.forceRefresh ? "1" : "0"
   });
   if (options.forceRefresh) {
     query.set("forceRefresh", "1");
   }
-  const response = await fetch(`/api/lookup?${query.toString()}`);
+  const response = await fetch(`/api/lookup?${query.toString()}`, { signal: options.signal });
   const payload = await response.json();
   if (!response.ok) {
     throw new Error(payload.error || (response.status === 403 ? "请先完成人机验证。" : "查询失败"));
@@ -749,18 +875,26 @@ async function runSearch(options = {}) {
   const author = document.getElementById("searchAuthor").value.trim();
 
   if (!title) {
+    activeSearchController?.abort();
+    activeSearchController = null;
+    activeSearchRequestId += 1;
+    state.loading = false;
     state.error = "请输入题目。";
     state.article = null;
     render();
     return;
   }
 
+  activeSearchController?.abort();
+  activeSearchController = new AbortController();
+  const requestId = ++activeSearchRequestId;
   state.loading = true;
   state.error = "";
   render();
 
   try {
-    const article = await fetchArticle(title, author, options);
+    const article = await fetchArticle(title, author, { ...options, signal: activeSearchController.signal });
+    if (requestId !== activeSearchRequestId) return;
     state.article = article;
     state.annotations = [];
     activeStroke = null;
@@ -769,10 +903,16 @@ async function runSearch(options = {}) {
     document.getElementById("searchTitle").value = article.title;
     document.getElementById("searchAuthor").value = article.author || "";
     mountHeader(article);
+    recordRecentWork(article);
+    const canonicalQuery = new URLSearchParams({ title: article.title, author: article.author || "" });
+    window.history.replaceState(null, "", `./reader.html?${canonicalQuery.toString()}`);
   } catch (error) {
+    if (error?.name === "AbortError" || requestId !== activeSearchRequestId) return;
     state.article = null;
     state.error = error.message;
   } finally {
+    if (requestId !== activeSearchRequestId) return;
+    activeSearchController = null;
     state.loading = false;
     render();
     scheduleDeferredRender();
@@ -807,7 +947,7 @@ function eventPointInLayer(event) {
 }
 
 function isTouchAnnotationEvent(event) {
-  return event.pointerType === "touch" && isMobileViewport() && state.annotationMode;
+  return event.pointerType === "touch" && state.annotationMode;
 }
 
 function getViewportAdjustedTouchPoint(event) {
@@ -1080,6 +1220,8 @@ function render() {
   renderPreviewSnapshot();
   renderStatus();
   syncExportButtonLabels();
+  document.getElementById("searchButton").disabled = state.loading;
+  syncArticleActions();
   renderAnnotationLayer();
 }
 
@@ -1121,6 +1263,8 @@ function startReaderApp() {
   });
   document.getElementById("previewPdfButton").addEventListener("click", openPreviewDialog);
   document.getElementById("openReciteScrollButton").addEventListener("click", openReciteScrollPage);
+  document.getElementById("favoriteArticleButton").addEventListener("click", toggleFavoriteArticle);
+  document.getElementById("shareArticleButton").addEventListener("click", shareArticle);
   document.getElementById("closeDialogButton").addEventListener("click", () => {
     document.getElementById("pdfDialog").close();
   });

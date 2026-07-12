@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import html
 import io
 import json
@@ -10,6 +11,7 @@ import secrets
 import sys
 import threading
 import time
+import unicodedata
 from difflib import SequenceMatcher
 from functools import lru_cache
 from http import HTTPStatus
@@ -18,7 +20,7 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from queue import Queue
 from datetime import datetime
-from urllib.parse import parse_qs, quote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 from urllib.request import Request, urlopen
 
 from PIL import Image, ImageDraw, ImageFont
@@ -109,6 +111,39 @@ RECITE_PAGE_MAX_LINE_CHARS = 12
 RECITE_PAGE_CHAR_CAPACITY = RECITE_PAGE_MAX_COLUMNS * RECITE_PAGE_MAX_LINE_CHARS
 RECITE_SENTENCE_SPLIT_RE = re.compile(r"[。？！!?；;]+")
 RECITE_CLAUSE_SPLIT_RE = re.compile(r"[，,：:、]+")
+MAX_JSON_BODY_BYTES = 32 * 1024
+PUBLIC_STATIC_FILES = {
+    "/index.html",
+    "/reader.html",
+    "/recite-scroll.html",
+    "/home.css",
+    "/home.js",
+    "/styles.css",
+    "/app.js",
+    "/recite-scroll.css",
+    "/recite-scroll.js",
+    "/human-verification.css",
+    "/human-verification.js",
+}
+PUBLIC_ASSET_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".svg", ".ico"}
+
+
+def is_public_static_path(raw_path: str) -> bool:
+    decoded_path = unquote(raw_path or "")
+    if decoded_path in PUBLIC_STATIC_FILES:
+        return True
+    if not decoded_path.startswith("/assets/"):
+        return False
+    relative_parts = Path(decoded_path.lstrip("/")).parts
+    if not relative_parts or any(part in {"", ".", ".."} for part in relative_parts):
+        return False
+    candidate = (ROOT / Path(*relative_parts)).resolve()
+    assets_root = (ROOT / "assets").resolve()
+    try:
+        candidate.relative_to(assets_root)
+    except ValueError:
+        return False
+    return candidate.is_file() and candidate.suffix.lower() in PUBLIC_ASSET_SUFFIXES
 EXPORT_FONT_PATH_CANDIDATES = {
     "regular": [
         Path(os.getenv("POEM_EXPORT_FONT_PATH", "")).expanduser() if os.getenv("POEM_EXPORT_FONT_PATH") else None,
@@ -787,7 +822,7 @@ def same_title_candidate_score(candidate, requested_title: str, preferred_author
     return score
 
 
-def collect_priority_candidates_from_lookup_sources(title: str, author: str):
+def collect_priority_candidates_from_lookup_sources(title: str, author: str, include_remote: bool = True):
     candidates = []
     seen = set()
 
@@ -830,34 +865,35 @@ def collect_priority_candidates_from_lookup_sources(title: str, author: str):
     except Exception:
         pass
 
-    try:
-        query = (
-            f"{LOOKUP_MODULE.POETRY_SEARCH_URL}?"
-            f"q={quote(title)}&type=title&page=1&pageSize=100"
-        )
-        payload = fetch_json_url(query)
-        if isinstance(payload, dict):
-            for item in payload.get("data", []):
-                item_title = item.get("title", "")
-                item_author = ((item.get("author") or {}).get("name")) or ""
-                if title_match_score(item_title, title) <= 0:
-                    continue
-                if not author_matches_requested(item_author, author):
-                    continue
-                result = RegistryLookupResult(
-                    item_title or title,
-                    item_author,
-                    ((item.get("dynasty") or {}).get("name")) or "",
-                    item.get("content", []),
-                    "诗泉 API（基于 chinese-poetry）",
-                )
-                signature = (normalize_key(result.title), normalize_key(result.author), result.source)
-                if signature in seen:
-                    continue
-                seen.add(signature)
-                candidates.append(result)
-    except Exception:
-        pass
+    if include_remote:
+        try:
+            query = (
+                f"{LOOKUP_MODULE.POETRY_SEARCH_URL}?"
+                f"q={quote(title)}&type=title&page=1&pageSize=100"
+            )
+            payload = fetch_json_url(query)
+            if isinstance(payload, dict):
+                for item in payload.get("data", []):
+                    item_title = item.get("title", "")
+                    item_author = ((item.get("author") or {}).get("name")) or ""
+                    if title_match_score(item_title, title) <= 0:
+                        continue
+                    if not author_matches_requested(item_author, author):
+                        continue
+                    result = RegistryLookupResult(
+                        item_title or title,
+                        item_author,
+                        ((item.get("dynasty") or {}).get("name")) or "",
+                        item.get("content", []),
+                        "诗泉 API（基于 chinese-poetry）",
+                    )
+                    signature = (normalize_key(result.title), normalize_key(result.author), result.source)
+                    if signature in seen:
+                        continue
+                    seen.add(signature)
+                    candidates.append(result)
+        except Exception:
+            pass
 
     return candidates
 
@@ -867,9 +903,14 @@ def lookup_preferred_same_title_result(title: str, author: str):
 
     registry_match = lookup_from_registry(title, author)
     if registry_match:
-        candidates.append(registry_match)
+        return registry_match
 
-    candidates.extend(collect_priority_candidates_from_lookup_sources(title, author))
+    local_candidates = collect_priority_candidates_from_lookup_sources(title, author, include_remote=False)
+    if local_candidates:
+        candidates.extend(local_candidates)
+    else:
+        candidates.extend(collect_priority_candidates_from_lookup_sources(title, author, include_remote=True))
+
     if not candidates:
         return None
 
@@ -1575,6 +1616,7 @@ def paginate_recite_lines(lines: list[str]):
     return pages
 
 
+@lru_cache(maxsize=256)
 def extract_recite_pages(title: str, author: str = ""):
     result, recite_lines = extract_recite_lines(title, author)
     pages = paginate_recite_lines(recite_lines)
@@ -1583,6 +1625,8 @@ def extract_recite_pages(title: str, author: str = ""):
 
 def build_recite_layout_payload(title: str, author: str = ""):
     result, pages = extract_recite_pages(title, author)
+    content_source = "\n".join(line for page in pages for line in page.get("lines", []))
+    content_version = hashlib.sha256(content_source.encode("utf-8")).hexdigest()[:16]
 
     return {
         "success": True,
@@ -1592,13 +1636,30 @@ def build_recite_layout_payload(title: str, author: str = ""):
         "page_char_capacity": RECITE_PAGE_CHAR_CAPACITY,
         "page_column_capacity": RECITE_PAGE_MAX_COLUMNS,
         "line_char_capacity": RECITE_PAGE_MAX_LINE_CHARS,
+        "content_version": content_version,
         "pages": pages,
     }
 
 
 def normalize_text(text) -> str:
-    raw = str(text or "")
+    raw = unicodedata.normalize("NFKC", str(text or ""))
     return "".join(char for char in raw if char not in RECITE_NORMALIZE_DROP_CHARS and not char.isspace())
+
+
+def recitation_pinyin_tokens(text: str) -> list[str]:
+    normalized = normalize_text(text)
+    if not normalized:
+        return []
+    return [
+        str(item[0]).lower()
+        for item in pinyin(
+            normalized,
+            style=Style.NORMAL,
+            heteronym=False,
+            errors=lambda chars: list(chars),
+        )
+        if item
+    ]
 
 
 def compare_recitation(expected: str, spoken: str):
@@ -1606,27 +1667,81 @@ def compare_recitation(expected: str, spoken: str):
     normalized_spoken = normalize_text(spoken)
     expected_chars = list(normalized_expected)
     spoken_chars = list(normalized_spoken)
-    char_results = [{"char": char, "status": "wrong"} for char in expected_chars]
+    char_results = [
+        {"char": char, "status": "wrong", "issue": "missing", "spoken_char": ""}
+        for char in expected_chars
+    ]
+    substitutions = []
+    missing_chars = []
+    extra_chars = []
     matcher = SequenceMatcher(a=expected_chars, b=spoken_chars)
-    has_extra_chars = False
 
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
         if tag == "equal":
             for index in range(i1, i2):
-                char_results[index]["status"] = "correct"
+                offset = index - i1
+                char_results[index] = {
+                    "char": expected_chars[index],
+                    "status": "correct",
+                    "issue": "",
+                    "spoken_char": spoken_chars[j1 + offset],
+                }
             continue
-        if tag == "insert" and j2 > j1 and char_results:
-            has_extra_chars = True
-            marker_index = min(i1, len(char_results) - 1)
-            char_results[marker_index]["status"] = "wrong"
+
+        if tag == "replace":
+            expected_segment = expected_chars[i1:i2]
+            spoken_segment = spoken_chars[j1:j2]
+            paired_length = min(len(expected_segment), len(spoken_segment))
+            for offset in range(paired_length):
+                expected_char = expected_segment[offset]
+                spoken_char = spoken_segment[offset]
+                char_results[i1 + offset] = {
+                    "char": expected_char,
+                    "status": "wrong",
+                    "issue": "substitution",
+                    "spoken_char": spoken_char,
+                }
+                substitutions.append({"expected": expected_char, "spoken": spoken_char})
+            if len(expected_segment) > paired_length:
+                remaining = expected_segment[paired_length:]
+                missing_chars.extend(remaining)
+                for offset, expected_char in enumerate(remaining, start=paired_length):
+                    char_results[i1 + offset] = {
+                        "char": expected_char,
+                        "status": "wrong",
+                        "issue": "missing",
+                        "spoken_char": "",
+                    }
+            if len(spoken_segment) > paired_length:
+                extra_chars.extend(spoken_segment[paired_length:])
+            continue
+
+        if tag == "delete":
+            missing_chars.extend(expected_chars[i1:i2])
+            continue
+
+        if tag == "insert":
+            extra_chars.extend(spoken_chars[j1:j2])
 
     passed = normalized_expected == normalized_spoken
+    correct_count = sum(1 for item in char_results if item["status"] == "correct")
+    accuracy = correct_count / max(len(expected_chars), len(spoken_chars), 1)
+    similarity = matcher.ratio()
+    expected_pinyin = recitation_pinyin_tokens(normalized_expected)
+    spoken_pinyin = recitation_pinyin_tokens(normalized_spoken)
+    phonetic_similarity = SequenceMatcher(a=expected_pinyin, b=spoken_pinyin).ratio()
     return {
         "passed": passed,
         "char_results": char_results,
         "normalized_expected": normalized_expected,
         "normalized_spoken": normalized_spoken,
-        "has_extra_chars": has_extra_chars,
+        "has_extra_chars": bool(extra_chars),
+        "missing_chars": missing_chars,
+        "extra_chars": extra_chars,
+        "substitutions": substitutions,
+        "accuracy": accuracy,
+        "similarity": similarity,
+        "phonetic_similarity": phonetic_similarity,
     }
 
 
@@ -1657,7 +1772,27 @@ def find_best_matching_line(spoken: str, lines: list[str], current_line_index: i
     }
 
 
-def build_recite_check_payload(title: str, author: str, page_index: int, current_line_index: int, spoken_text: str):
+def recite_comparison_payload(comparison: dict) -> dict:
+    return {
+        "char_results": comparison["char_results"],
+        "accuracy": comparison["accuracy"],
+        "similarity": comparison["similarity"],
+        "phonetic_similarity": comparison["phonetic_similarity"],
+        "missing_chars": comparison["missing_chars"],
+        "extra_chars": comparison["extra_chars"],
+        "substitutions": comparison["substitutions"],
+        "has_extra_chars": comparison["has_extra_chars"],
+    }
+
+
+def build_recite_check_payload(
+    title: str,
+    author: str,
+    page_index: int,
+    current_line_index: int,
+    spoken_text: str,
+    source: str = "manual",
+):
     result, pages = extract_recite_pages(title, author)
     if not 0 <= page_index < len(pages):
         raise ValueError("page_index 超出范围。")
@@ -1669,7 +1804,7 @@ def build_recite_check_payload(title: str, author: str, page_index: int, current
 
     best_match = find_best_matching_line(spoken_text, current_lines, current_line_index)
     matched_line_index = best_match["matched_line_index"]
-    comparison = compare_recitation(current_lines[matched_line_index], spoken_text)
+    current_comparison = compare_recitation(current_lines[current_line_index], spoken_text)
 
     next_page_index = page_index + 1
     next_page_first_line = ""
@@ -1690,13 +1825,18 @@ def build_recite_check_payload(title: str, author: str, page_index: int, current
             "expected_line": next_page_first_line,
             "spoken_text": spoken_text,
             "passed": False,
-            "char_results": next_comparison["char_results"],
-            "message": f"可能已背到下一简，第 {next_page_index + 1} 简第一句更接近当前输入。",
+            **recite_comparison_payload(next_comparison),
+            "message": f"可能已背到下一页，第 {next_page_index + 1} 页第一句更接近当前输入。",
             "title": result.title,
             "author": result.author,
         }
 
-    if matched_line_index != current_line_index:
+    if (
+        matched_line_index != current_line_index
+        and best_match["score"] >= 0.72
+        and best_match["score"] > best_match["current_line_score"] + 0.08
+    ):
+        matched_comparison = compare_recitation(current_lines[matched_line_index], spoken_text)
         return {
             "success": True,
             "status": "order_error",
@@ -1707,18 +1847,38 @@ def build_recite_check_payload(title: str, author: str, page_index: int, current
             "expected_line": current_lines[matched_line_index],
             "spoken_text": spoken_text,
             "passed": False,
-            "char_results": comparison["char_results"],
+            **recite_comparison_payload(matched_comparison),
             "message": f"顺序可能有误，当前应为第 {current_line_index + 1} 句，输入内容更接近第 {matched_line_index + 1} 句。",
             "title": result.title,
             "author": result.author,
         }
 
+    comparison = current_comparison
+    normalized_lengths_match = len(comparison["normalized_expected"]) == len(comparison["normalized_spoken"])
+    speech_may_be_recognition_bias = (
+        source == "speech"
+        and not comparison["passed"]
+        and normalized_lengths_match
+        and comparison["phonetic_similarity"] >= 0.98
+        and comparison["similarity"] >= 0.55
+    )
+
     if comparison["passed"]:
         status = "pass"
-        message = "本句通过"
+        message = "本句准确通过。"
+    elif speech_may_be_recognition_bias:
+        status = "speech_uncertain"
+        message = "发音与原句高度一致，但识别文字存在同音差异，请确认是否为语音识别偏差。"
     else:
         status = "partial_fail"
-        message = "存在错字或漏字"
+        issue_parts = []
+        if comparison["missing_chars"]:
+            issue_parts.append(f"漏 {len(comparison['missing_chars'])} 字")
+        if comparison["substitutions"]:
+            issue_parts.append(f"错 {len(comparison['substitutions'])} 字")
+        if comparison["extra_chars"]:
+            issue_parts.append(f"多 {len(comparison['extra_chars'])} 字")
+        message = "、".join(issue_parts) + "，请查看逐字反馈。" if issue_parts else "当前输入与原句不一致，请再试一次。"
 
     return {
         "success": True,
@@ -1726,11 +1886,11 @@ def build_recite_check_payload(title: str, author: str, page_index: int, current
         "page_index": page_index,
         "current_line_index": current_line_index,
         "matched_page_index": page_index,
-        "matched_line_index": matched_line_index,
+        "matched_line_index": current_line_index,
         "expected_line": current_lines[current_line_index],
         "spoken_text": spoken_text,
         "passed": comparison["passed"],
-        "char_results": comparison["char_results"],
+        **recite_comparison_payload(comparison),
         "message": message,
         "title": result.title,
         "author": result.author,
@@ -2211,13 +2371,31 @@ def build_payload(title: str, author: str = "", wait_for_enrichment: bool = Fals
 
 
 class AppHandler(SimpleHTTPRequestHandler):
+    server_version = "PoemServer/1.0"
+    sys_version = ""
+    extensions_map = {
+        **SimpleHTTPRequestHandler.extensions_map,
+        ".css": "text/css; charset=utf-8",
+        ".js": "text/javascript; charset=utf-8",
+        ".svg": "image/svg+xml",
+    }
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(ROOT), **kwargs)
 
     def end_headers(self):
-        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
-        self.send_header("Pragma", "no-cache")
-        self.send_header("Expires", "0")
+        parsed_path = urlparse(self.path).path
+        if Path(parsed_path).suffix.lower() in {".css", ".js", ".png", ".jpg", ".jpeg", ".webp", ".svg", ".ico"}:
+            self.send_header("Cache-Control", "public, max-age=300, must-revalidate")
+        else:
+            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+            self.send_header("Pragma", "no-cache")
+            self.send_header("Expires", "0")
+        self.send_header("Content-Security-Policy", "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; font-src 'self' data:; media-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "same-origin")
+        self.send_header("Permissions-Policy", "camera=(), geolocation=(), microphone=(self)")
         super().end_headers()
 
     def do_GET(self):
@@ -2246,8 +2424,11 @@ class AppHandler(SimpleHTTPRequestHandler):
         if parsed.path in {"/reader.html", "/recite-scroll.html"} and not self.request_is_human_verified():
             self.redirect("/index.html")
             return
-        if parsed.path == "/":
-            self.path = "/index.html"
+        static_path = "/index.html" if parsed.path == "/" else unquote(parsed.path)
+        if not is_public_static_path(static_path):
+            self.send_error(HTTPStatus.NOT_FOUND, "Not Found")
+            return
+        self.path = static_path
         super().do_GET()
 
     def do_POST(self):
@@ -2263,6 +2444,18 @@ class AppHandler(SimpleHTTPRequestHandler):
             return
         self.send_error(HTTPStatus.NOT_FOUND, "Not Found")
 
+    def do_HEAD(self):
+        parsed = urlparse(self.path)
+        if parsed.path in {"/reader.html", "/recite-scroll.html"} and not self.request_is_human_verified():
+            self.redirect("/index.html")
+            return
+        static_path = "/index.html" if parsed.path == "/" else unquote(parsed.path)
+        if not is_public_static_path(static_path):
+            self.send_error(HTTPStatus.NOT_FOUND, "Not Found")
+            return
+        self.path = static_path
+        super().do_HEAD()
+
     def request_is_human_verified(self) -> bool:
         return is_human_verified(self.headers.get("Cookie"))
 
@@ -2271,11 +2464,13 @@ class AppHandler(SimpleHTTPRequestHandler):
 
     def handle_human_verify(self):
         token, max_age = issue_human_verification_token()
+        forwarded_proto = self.headers.get("X-Forwarded-Proto", "").split(",", 1)[0].strip().lower()
+        secure_attribute = "; Secure" if forwarded_proto == "https" else ""
         self.write_json(
             {"verified": True, "maxAge": max_age},
             HTTPStatus.OK,
             extra_headers={
-                "Set-Cookie": f"{HUMAN_VERIFICATION_COOKIE}={token}; Max-Age={max_age}; Path=/; HttpOnly; SameSite=Lax"
+                "Set-Cookie": f"{HUMAN_VERIFICATION_COOKIE}={token}; Max-Age={max_age}; Path=/; HttpOnly; SameSite=Lax{secure_attribute}"
             },
         )
 
@@ -2288,6 +2483,9 @@ class AppHandler(SimpleHTTPRequestHandler):
 
         if not title:
             self.write_json({"error": "请输入题目。"}, HTTPStatus.BAD_REQUEST)
+            return
+        if len(title) > 120 or len(author) > 80:
+            self.write_json({"error": "输入内容过长。"}, HTTPStatus.BAD_REQUEST)
             return
 
         try:
@@ -2305,6 +2503,9 @@ class AppHandler(SimpleHTTPRequestHandler):
 
         if not title:
             self.write_json({"success": False, "error": "请输入题目。"}, HTTPStatus.BAD_REQUEST)
+            return
+        if len(title) > 120 or len(author) > 80:
+            self.write_json({"success": False, "error": "输入内容过长。"}, HTTPStatus.BAD_REQUEST)
             return
 
         try:
@@ -2325,6 +2526,7 @@ class AppHandler(SimpleHTTPRequestHandler):
         title = str(payload.get("title", "")).strip()
         author = str(payload.get("author", "")).strip()
         spoken_text = str(payload.get("spoken_text", "")).strip()
+        source = str(payload.get("source", "manual")).strip().lower()
         page_index_raw = payload.get("page_index", 0)
         current_line_index_raw = payload.get("current_line_index", 0)
 
@@ -2334,6 +2536,11 @@ class AppHandler(SimpleHTTPRequestHandler):
         if not spoken_text:
             self.write_json({"success": False, "error": "请输入背诵内容。"}, HTTPStatus.BAD_REQUEST)
             return
+        if len(title) > 120 or len(author) > 80 or len(spoken_text) > 500:
+            self.write_json({"success": False, "error": "输入内容过长。"}, HTTPStatus.BAD_REQUEST)
+            return
+        if source not in {"manual", "speech"}:
+            source = "manual"
 
         try:
             page_index = int(page_index_raw)
@@ -2348,7 +2555,7 @@ class AppHandler(SimpleHTTPRequestHandler):
             return
 
         try:
-            result = build_recite_check_payload(title, author, page_index, current_line_index, spoken_text)
+            result = build_recite_check_payload(title, author, page_index, current_line_index, spoken_text, source=source)
         except LookupError as exc:
             self.write_json({"success": False, "error": str(exc)}, HTTPStatus.NOT_FOUND)
             return
@@ -2368,6 +2575,9 @@ class AppHandler(SimpleHTTPRequestHandler):
 
         if not title:
             self.write_json({"error": "请输入题目。"}, HTTPStatus.BAD_REQUEST)
+            return
+        if len(title) > 120 or len(author) > 80:
+            self.write_json({"error": "输入内容过长。"}, HTTPStatus.BAD_REQUEST)
             return
 
         try:
@@ -2404,6 +2614,8 @@ class AppHandler(SimpleHTTPRequestHandler):
 
     def read_json_body(self):
         content_length = int(self.headers.get("Content-Length", "0") or 0)
+        if content_length < 0 or content_length > MAX_JSON_BODY_BYTES:
+            raise ValueError("请求体过大。")
         raw_body = self.rfile.read(content_length) if content_length > 0 else b""
         if not raw_body:
             return {}
