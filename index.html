@@ -2,51 +2,196 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>古诗文搜索</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Liu+Jian+Mao+Cao&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="./home.css" />
-  <link rel="stylesheet" href="./human-verification.css" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#f5f5f7" />
+  <meta name="description" content="检索、阅读与科学背诵古诗文的轻量学习空间。" />
+  <title>诗境 · 古诗文学习空间</title>
+  <link rel="stylesheet" href="./home.css?v=20260712" />
+  <link rel="stylesheet" href="./human-verification.css?v=20260712" />
 </head>
 <body>
-  <main class="home-page">
-    <section class="hero">
-      <h1 class="hero-logo" aria-label="古诗文搜索">古诗文搜索</h1>
-      <p class="hero-copy">输入诗歌题目和诗人名字，进入完整排版页</p>
+  <a class="skip-link" href="#mainContent">跳到主要内容</a>
 
-      <div class="search-shell">
-        <label class="search-bar" for="searchTitle">
-          <svg class="search-icon" viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M15.5 14h-.79l-.28-.27a6 6 0 1 0-.71.71l.27.28v.79L19 20.5 20.5 19zM10 14a4 4 0 1 1 0-8 4 4 0 0 1 0 8z"></path>
-          </svg>
-          <input id="searchTitle" class="search-input" type="text" placeholder="诗歌名字，如：静夜思" autocomplete="off" />
-        </label>
+  <nav class="site-nav" aria-label="主导航">
+    <a class="brand" href="./index.html" aria-label="诗境首页">
+      <span class="brand-mark" aria-hidden="true">诗</span>
+      <span>诗境</span>
+    </a>
+    <div class="nav-links">
+      <a href="#discover">发现</a>
+      <a href="#learning">学习</a>
+      <a href="#library">我的诗库</a>
+    </div>
+    <a class="nav-cta" href="#searchPanel">开始探索</a>
+  </nav>
 
-        <input id="searchAuthor" class="author-input" type="text" placeholder="诗人名字（可选）" autocomplete="off" />
+  <main id="mainContent" class="home-page">
+    <section class="hero" id="discover">
+      <div class="hero-aura hero-aura-one" aria-hidden="true"></div>
+      <div class="hero-aura hero-aura-two" aria-hidden="true"></div>
+      <p class="eyebrow">古诗文学习空间</p>
+      <h1>读懂一首诗，<br /><span>记住一种心境。</span></h1>
+      <p class="hero-copy">从可靠检索、逐字拼音到主动回忆训练，让每一次阅读都更清晰，每一次背诵都更有效。</p>
 
-        <div class="search-actions">
-          <button id="searchButton" class="search-button" type="button">进入查询页</button>
+      <div id="searchPanel" class="search-panel">
+        <div class="search-panel-head">
+          <div>
+            <span class="search-label">现在，想读哪一篇？</span>
+            <span class="search-hint">题目必填，作者可帮助精准匹配</span>
+          </div>
+          <span class="search-badge">500+ 篇经典</span>
+        </div>
+
+        <div class="search-fields">
+          <label class="search-field search-field-primary" for="searchTitle">
+            <svg class="search-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M15.5 14h-.79l-.28-.27a6 6 0 1 0-.71.71l.27.28v.79L19 20.5 20.5 19zM10 14a4 4 0 1 1 0-8 4 4 0 0 1 0 8z"></path>
+            </svg>
+            <span class="sr-only">作品题目</span>
+            <input id="searchTitle" class="search-input" type="text" placeholder="例如：静夜思、岳阳楼记" autocomplete="off" enterkeyhint="search" />
+          </label>
+
+          <label class="search-field search-field-author" for="searchAuthor">
+            <span class="sr-only">作者</span>
+            <input id="searchAuthor" class="author-input" type="text" placeholder="作者（可选）" autocomplete="off" enterkeyhint="search" />
+          </label>
+
+          <button id="searchButton" class="search-button" type="button">
+            <span>开始阅读</span>
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m7.5 4.5 5.5 5.5-5.5 5.5" /></svg>
+          </button>
+        </div>
+
+        <div class="quick-searches" aria-label="热门作品">
+          <span>热门</span>
+          <button type="button" data-title="静夜思" data-author="李白">静夜思</button>
+          <button type="button" data-title="岳阳楼记" data-author="范仲淹">岳阳楼记</button>
+          <button type="button" data-title="赤壁赋" data-author="苏轼">赤壁赋</button>
+          <button type="button" data-title="木兰诗" data-author="">木兰诗</button>
+        </div>
+        <p id="searchMessage" class="search-message" role="status" aria-live="polite"></p>
+      </div>
+    </section>
+
+    <section id="library" class="personal-section" aria-labelledby="personalTitle">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">为你保留</p>
+          <h2 id="personalTitle">从上次停下的地方继续。</h2>
+        </div>
+        <p>最近阅读、收藏与背诵进度只保存在你的浏览器中。</p>
+      </div>
+
+      <div class="personal-grid">
+        <article id="continueReciteCard" class="personal-card continue-card" hidden>
+          <div class="card-icon card-icon-blue" aria-hidden="true">续</div>
+          <div class="personal-card-copy">
+            <span class="card-kicker">继续背诵</span>
+            <h3 id="continueReciteTitle">尚无背诵进度</h3>
+            <p id="continueReciteMeta">开始一次背诵训练后，这里会记住进度。</p>
+          </div>
+          <button id="continueReciteButton" class="card-action" type="button">继续</button>
+        </article>
+
+        <article class="personal-card">
+          <div class="card-icon card-icon-violet" aria-hidden="true">近</div>
+          <div class="personal-card-copy">
+            <span class="card-kicker">最近阅读</span>
+            <h3 id="recentTitle">还没有浏览记录</h3>
+            <p id="recentMeta">查找一篇作品后，可从这里快速返回。</p>
+          </div>
+          <button id="recentButton" class="card-action" type="button" disabled>打开</button>
+        </article>
+
+        <article class="personal-card">
+          <div class="card-icon card-icon-orange" aria-hidden="true">藏</div>
+          <div class="personal-card-copy">
+            <span class="card-kicker">我的收藏</span>
+            <h3 id="favoriteTitle">收藏夹是空的</h3>
+            <p id="favoriteMeta">在阅读页点“收藏”，经典篇目就不会走丢。</p>
+          </div>
+          <button id="favoriteButton" class="card-action" type="button" disabled>打开</button>
+        </article>
+      </div>
+    </section>
+
+    <section id="learning" class="feature-section" aria-labelledby="featureTitle">
+      <div class="section-heading feature-heading">
+        <div>
+          <p class="eyebrow">一体化学习</p>
+          <h2 id="featureTitle">不只找到原文，也真正学会它。</h2>
         </div>
       </div>
+
+      <div class="feature-grid">
+        <article class="feature-card feature-card-large feature-reader">
+          <div class="feature-copy">
+            <span class="feature-number">01</span>
+            <h3>沉浸阅读</h3>
+            <p>逐字拼音、注释、译文和朗诵参考在同一页面按需展开，减少来回查找。</p>
+          </div>
+          <div class="reader-demo" aria-hidden="true">
+            <div class="demo-line demo-title">静 夜 思</div>
+            <div class="demo-pinyin">chuáng qián míng yuè guāng</div>
+            <div class="demo-poem">床 前 明 月 光</div>
+            <div class="demo-divider"></div>
+            <div class="demo-note">低头思故乡</div>
+          </div>
+        </article>
+
+        <article class="feature-card feature-recite">
+          <div class="feature-copy">
+            <span class="feature-number">02</span>
+            <h3>科学背诵</h3>
+            <p>全文熟读、渐隐提示、无提示回忆逐级推进，并自动记录薄弱句。</p>
+          </div>
+          <div class="progress-demo" aria-hidden="true">
+            <span>本轮掌握度</span>
+            <strong>72%</strong>
+            <div><i></i></div>
+          </div>
+        </article>
+
+        <article class="feature-card feature-export">
+          <div class="feature-copy">
+            <span class="feature-number">03</span>
+            <h3>批注与导出</h3>
+            <p>触控批注、PDF 与手机长图，让课堂展示和复习资料自然衔接。</p>
+          </div>
+          <div class="export-symbol" aria-hidden="true">
+            <span>PDF</span>
+            <svg viewBox="0 0 24 24"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 19h14" /></svg>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section class="closing-cta">
+      <p class="eyebrow">下一篇经典</p>
+      <h2>在字里行间，遇见古人的月光。</h2>
+      <button id="dailyPoemButton" type="button">读今日一诗</button>
     </section>
   </main>
 
+  <footer class="site-footer">
+    <span>诗境 · 古诗文学习空间</span>
+    <span>阅读有迹，记忆有方。</span>
+  </footer>
+
   <div id="humanVerificationOverlay" class="human-verification-overlay" aria-modal="true" role="dialog" aria-labelledby="humanVerificationTitle">
     <div class="human-verification-card">
-      <h2 id="humanVerificationTitle" class="human-verification-title">访问前验证</h2>
-      <p class="human-verification-copy">为减少异常流量和爆破式访问，进入站点前需要先完成人机确认。这里只做一次轻量验证，勾选后即可继续。</p>
+      <h2 id="humanVerificationTitle" class="human-verification-title">访问确认</h2>
+      <p class="human-verification-copy">确认后会建立本次访问会话。接口仍会实施请求频率和资源限制。</p>
       <label class="human-verification-check" for="humanVerificationCheckbox">
         <input id="humanVerificationCheckbox" type="checkbox" />
-        <span>我不是机器人</span>
+        <span>我已了解访问规则</span>
       </label>
       <button id="humanVerificationButton" class="human-verification-action" type="button" disabled>继续访问</button>
       <div id="humanVerificationMessage" class="human-verification-message"></div>
     </div>
   </div>
 
-  <script src="./human-verification.js"></script>
-  <script src="./home.js"></script>
+  <script src="./human-verification.js?v=20260712"></script>
+  <script src="./home.js?v=20260712"></script>
 </body>
 </html>
