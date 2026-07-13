@@ -1,2 +1,2 @@
 pillow>=12.3,<13
-pypinyin>=0.53,<1
+pypinyin>=0.55.0,<1
