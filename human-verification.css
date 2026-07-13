@@ -1,11 +1,11 @@
 :root {
-  --human-overlay-bg: rgba(0, 0, 0, 0.42);
-  --human-card-bg: rgba(255, 255, 255, 0.94);
-  --human-card-border: rgba(255, 255, 255, 0.66);
-  --human-card-shadow: 0 28px 80px rgba(0, 0, 0, 0.2);
-  --human-accent: #0071e3;
-  --human-accent-deep: #0068d1;
-  --human-danger: #d70015;
+  --human-overlay-bg: rgba(28, 24, 17, 0.58);
+  --human-card-bg: linear-gradient(180deg, rgba(255, 253, 246, 0.98), rgba(246, 240, 224, 0.96));
+  --human-card-border: rgba(180, 167, 128, 0.48);
+  --human-card-shadow: 0 24px 60px rgba(54, 44, 28, 0.22);
+  --human-accent: #56753d;
+  --human-accent-deep: #405730;
+  --human-danger: #b5483c;
 }
 
 .human-verification-overlay {
@@ -17,7 +17,7 @@
   justify-content: center;
   padding: 24px;
   background: var(--human-overlay-bg);
-  backdrop-filter: blur(14px) saturate(130%);
+  backdrop-filter: blur(8px);
 }
 
 .human-verification-overlay.is-active {
@@ -26,26 +26,23 @@
 
 .human-verification-card {
   width: min(100%, 420px);
-  max-height: calc(100dvh - 32px);
-  overflow-y: auto;
   padding: 28px 24px 24px;
   border: 1px solid var(--human-card-border);
   border-radius: 24px;
   background: var(--human-card-bg);
   box-shadow: var(--human-card-shadow);
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Helvetica Neue", Arial, sans-serif;
 }
 
 .human-verification-title {
   margin: 0;
   font-size: 26px;
   line-height: 1.2;
-  color: #1d1d1f;
+  color: #2a241a;
 }
 
 .human-verification-copy {
   margin: 14px 0 0;
-  color: #6e6e73;
+  color: #61594a;
   font-size: 14px;
   line-height: 1.65;
 }
@@ -56,9 +53,9 @@
   gap: 14px;
   margin-top: 20px;
   padding: 16px 18px;
-  border: 1px solid rgba(29, 29, 31, 0.1);
+  border: 1px solid rgba(183, 173, 140, 0.64);
   border-radius: 18px;
-  background: #f5f5f7;
+  background: rgba(255, 255, 255, 0.72);
 }
 
 .human-verification-check input {
@@ -70,17 +67,17 @@
 
 .human-verification-check span {
   font-size: 16px;
-  color: #1d1d1f;
+  color: #2f2a20;
 }
 
 .human-verification-action {
   width: 100%;
   height: 44px;
   margin-top: 18px;
-  border: 0;
-  border-radius: 13px;
-  background: var(--human-accent);
-  color: #fff;
+  border: 1px solid rgba(78, 103, 55, 0.28);
+  border-radius: 12px;
+  background: linear-gradient(180deg, var(--human-accent), var(--human-accent-deep));
+  color: #fffdf7;
   font-size: 15px;
   cursor: pointer;
 }
@@ -93,40 +90,10 @@
 .human-verification-message {
   min-height: 20px;
   margin-top: 12px;
-  color: #6e6e73;
+  color: #61594a;
   font-size: 13px;
 }
 
 .human-verification-message.is-error {
   color: var(--human-danger);
-}
-
-@media (max-height: 440px) {
-  .human-verification-overlay {
-    align-items: flex-start;
-    padding: 12px;
-  }
-
-  .human-verification-card {
-    max-height: calc(100dvh - 24px);
-    padding: 20px 18px 18px;
-  }
-
-  .human-verification-title {
-    font-size: 22px;
-  }
-
-  .human-verification-copy {
-    margin-top: 9px;
-    line-height: 1.5;
-  }
-
-  .human-verification-check {
-    margin-top: 12px;
-    padding: 12px 14px;
-  }
-
-  .human-verification-action {
-    margin-top: 12px;
-  }
 }

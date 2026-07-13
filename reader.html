@@ -2,19 +2,18 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-  <meta name="theme-color" content="#f5f5f7" />
-  <title>古诗文阅读 · 诗境</title>
-  <link rel="stylesheet" href="./styles.css?v=20260712" />
-  <link rel="stylesheet" href="./human-verification.css?v=20260712" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>古诗文排版查询</title>
+  <link rel="stylesheet" href="./styles.css" />
+  <link rel="stylesheet" href="./human-verification.css" />
 </head>
 <body>
   <div class="page-shell">
     <aside class="page-rail"></aside>
     <main class="app-main">
       <section class="top-toolbar">
-        <a class="back-home-link" href="./index.html">诗境</a>
-        <div id="queryStatus" class="query-status" role="status" aria-live="polite">等待查询</div>
+        <a class="back-home-link" href="./index.html">返回主页</a>
+        <div id="queryStatus" class="query-status">等待查询</div>
         <button id="refreshArticleButton" class="toolbar-refresh-button toolbar-refresh-button-hidden" type="button">刷新内容</button>
         <div class="toggle-row toggle-row-compact">
           <label class="toggle-check" for="toggleTranslation">
@@ -41,8 +40,6 @@
           <button class="toggle-jump" type="button" data-target-id="recitationSection">朗诵</button>
         </div>
         <button id="openReciteScrollButton" class="toolbar-recite-button" type="button">竹简背诵</button>
-        <button id="favoriteArticleButton" class="toolbar-secondary-button" type="button" aria-pressed="false">收藏</button>
-        <button id="shareArticleButton" class="toolbar-secondary-button" type="button">分享</button>
         <div class="annotation-tools">
           <button id="annotationModeButton" class="annotation-mode-button" type="button">批注模式</button>
           <div class="annotation-detail-tools">
@@ -143,18 +140,18 @@
 
   <div id="humanVerificationOverlay" class="human-verification-overlay" aria-modal="true" role="dialog" aria-labelledby="humanVerificationTitle">
     <div class="human-verification-card">
-      <h2 id="humanVerificationTitle" class="human-verification-title">访问确认</h2>
-      <p class="human-verification-copy">确认后会建立本次访问会话。查询和导出接口仍受频率及资源限制。</p>
+      <h2 id="humanVerificationTitle" class="human-verification-title">访问前验证</h2>
+      <p class="human-verification-copy">为减少异常请求，进入排版页前需要先完成人机确认。验证通过后才允许查询内容和访问接口。</p>
       <label class="human-verification-check" for="humanVerificationCheckbox">
         <input id="humanVerificationCheckbox" type="checkbox" />
-        <span>我已了解访问规则</span>
+        <span>我不是机器人</span>
       </label>
       <button id="humanVerificationButton" class="human-verification-action" type="button" disabled>继续访问</button>
       <div id="humanVerificationMessage" class="human-verification-message"></div>
     </div>
   </div>
 
-  <script src="./human-verification.js?v=20260712"></script>
-  <script src="./app.js?v=20260712"></script>
+  <script src="./human-verification.js"></script>
+  <script src="./app.js"></script>
 </body>
 </html>

@@ -2,41 +2,26 @@ function createHumanVerification() {
   function setDisabled(selector, disabled) {
     if (!selector) return;
     document.querySelectorAll(selector).forEach((element) => {
-        element.querySelectorAll("button, input, select, textarea, a").forEach((control) => {
-          if (disabled) {
-            if (control.dataset.humanDisabled !== "1") {
-              control.dataset.humanDisabled = "1";
-              if ("disabled" in control) {
-                control.dataset.humanWasDisabled = control.disabled ? "1" : "0";
-              }
-              if (control.tagName === "A") {
-                control.dataset.humanPreviousTabIndex = control.getAttribute("tabindex") || "";
-              }
-            }
-            if ("disabled" in control) {
-              control.disabled = true;
-            }
-            if (control.tagName === "A") {
-              control.setAttribute("aria-disabled", "true");
-              control.tabIndex = -1;
-            }
-          } else if (control.dataset.humanDisabled === "1") {
-            if ("disabled" in control) {
-              control.disabled = control.dataset.humanWasDisabled === "1";
-              delete control.dataset.humanWasDisabled;
-            }
-            if (control.tagName === "A") {
-              control.removeAttribute("aria-disabled");
-              const previousTabIndex = control.dataset.humanPreviousTabIndex;
-              if (previousTabIndex) {
-                control.setAttribute("tabindex", previousTabIndex);
-              } else {
-                control.removeAttribute("tabindex");
-              }
-              delete control.dataset.humanPreviousTabIndex;
-            }
-            delete control.dataset.humanDisabled;
+      element.querySelectorAll("button, input, select, textarea, a").forEach((control) => {
+        if (disabled) {
+          control.dataset.humanDisabled = "1";
+          if ("disabled" in control) {
+            control.disabled = true;
           }
+          if (control.tagName === "A") {
+            control.setAttribute("aria-disabled", "true");
+            control.tabIndex = -1;
+          }
+        } else if (control.dataset.humanDisabled === "1") {
+          delete control.dataset.humanDisabled;
+          if ("disabled" in control) {
+            control.disabled = false;
+          }
+          if (control.tagName === "A") {
+            control.removeAttribute("aria-disabled");
+            control.tabIndex = 0;
+          }
+        }
       });
     });
   }
@@ -83,7 +68,6 @@ function createHumanVerification() {
       button.disabled = true;
       overlay.classList.add("is-active");
       setMessage(text || "勾选后即可继续访问。");
-      window.requestAnimationFrame(() => checkbox.focus());
     }
 
     function closeGate() {
