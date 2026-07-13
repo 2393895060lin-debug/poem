@@ -3,3 +3,26 @@ __pycache__/
 *.log
 *.err
 .data/
+
+# Local credentials and deployment configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+credentials/
+secrets/
+
+# Local exports and temporary artifacts
+.codex-doc-render/
+.codex-doc-tools/
+_tmp_*
+hyperframes-*/
+*.docx
+*.pdf
+*.mp4
+*.wav
+*_report.json
+create_project_summary_doc.py

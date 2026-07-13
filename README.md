@@ -35,6 +35,15 @@ http://127.0.0.1:8765
 - `PORT`：云平台自动注入时会直接使用。
 - `POEM_UI_HOST`：部署时建议是 `0.0.0.0`，Dockerfile 已经设置好了。
 - `POEM_DATA_DIR`：可选，用来指定缓存和导出文件目录。
+- `POEM_FORCE_SECURE_COOKIES`：公网 HTTPS 部署设置为 `1`。
+- `POEM_TRUST_PROXY_HEADERS`：仅当可信代理会覆盖 `X-Forwarded-*` 请求头时设置为 `1`。
+- `POEM_MAX_SERVER_WORKERS`：并发请求处理上限，默认 32。
+
+## 公网部署安全
+
+- 使用 Docker 镜像或独立部署目录，不要长期把本机项目目录通过隧道直接暴露。
+- 将服务放在 Cloudflare、Nginx 或 Caddy 等 HTTPS 反向代理之后，并启用 WAF、连接超时和边缘限速。
+- 内置访问确认只建立会话，不是真实 CAPTCHA；阻挡机器人需接入 Turnstile、hCaptcha 等服务。
 
 ## 不想上云的临时分享
 

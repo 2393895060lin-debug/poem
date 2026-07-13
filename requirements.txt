@@ -1,3 +1,2 @@
-pillow>=10.4,<11
+pillow>=12.3,<13
 pypinyin>=0.53,<1
-python-docx>=1.1,<2

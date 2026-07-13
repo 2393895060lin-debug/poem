@@ -30,12 +30,29 @@ let touchPanFrameId = 0;
 let pageScrollLockY = 0;
 let deferredRenderTimer = 0;
 
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
+}
+
 function escapeSvg(value) {
   return String(value)
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;");
+}
+
+function safeExternalUrl(value) {
+  try {
+    const url = new URL(String(value || ""), window.location.origin);
+    return ["http:", "https:"].includes(url.protocol) ? url.href : "#";
+  } catch (_error) {
+    return "#";
+  }
 }
 
 function shouldHidePinyin(char) {
@@ -63,7 +80,7 @@ function formatPreviewMeta(article) {
 function mountHeader(article) {
   createGridCells(article.title.split(""), "title-cell", document.getElementById("titleGrid"));
   document.getElementById("authorPinyin").innerHTML = article.authorPinyin
-    .map((item) => `<span>${inlineSymbols.has(item) ? "" : item}</span>`)
+    .map((item) => `<span>${inlineSymbols.has(item) ? "" : escapeHtml(item)}</span>`)
     .join("");
   createGridCells(article.authorDisplay, "author-cell", document.getElementById("authorGrid"));
   document.title = `${article.title} - 古诗文排版查询`;
@@ -189,7 +206,10 @@ function renderArticle() {
   }
 
   if (state.error) {
-    articleCanvas.innerHTML = `<div class="empty-state empty-state-error">${state.error}</div>`;
+    const errorState = document.createElement("div");
+    errorState.className = "empty-state empty-state-error";
+    errorState.textContent = state.error;
+    articleCanvas.appendChild(errorState);
     return;
   }
 
@@ -218,9 +238,9 @@ function renderArticle() {
 function renderNoteEntries(items) {
   return items
     .map((item) => `
-      <div class="note-entry" data-note-index="${item.index}">
-        <button class="note-index" type="button" data-note-index="${item.index}" title="跳回原文第 ${item.index} 处注释">${item.index}</button>
-        <div class="note-copy"><span class="note-term">${item.term}</span>${item.term ? "：" : ""}${item.text}</div>
+      <div class="note-entry" data-note-index="${escapeHtml(item.index)}">
+        <button class="note-index" type="button" data-note-index="${escapeHtml(item.index)}" title="跳回原文第 ${escapeHtml(item.index)} 处注释">${escapeHtml(item.index)}</button>
+        <div class="note-copy"><span class="note-term">${escapeHtml(item.term)}</span>${item.term ? "：" : ""}${escapeHtml(item.text)}</div>
       </div>
     `)
     .join("");
@@ -235,7 +255,7 @@ function renderNoteGroups(article) {
   return groups
     .map((group) => `
       <section class="note-group">
-        <div class="note-group-title">${group.label}</div>
+        <div class="note-group-title">${escapeHtml(group.label || "")}</div>
         <div class="note-group-list">
           ${renderNoteEntries(group.items)}
         </div>
@@ -249,15 +269,15 @@ function fillSupplementBody() {
   if (!article) return;
 
   document.getElementById("translationBody").innerHTML = article.translation.length
-    ? article.translation.map((paragraph) => `<p>${paragraph}</p>`).join("")
+    ? article.translation.map((paragraph) => `<p>${escapeHtml(paragraph)}</p>`).join("")
     : `
       <p class="supplement-empty">当前未收录现成白话译文，下面给你准备了可直接打开的译文参考入口。</p>
       <div class="reference-link-list">
         ${(article.translationReferences || [])
           .map((item) => `
-            <a class="reference-link-card" href="${item.url}" target="_blank" rel="noreferrer">
-              <div class="reference-link-title">${item.label}</div>
-              <div class="reference-link-copy">${item.description}</div>
+            <a class="reference-link-card" href="${escapeHtml(safeExternalUrl(item.url))}" target="_blank" rel="noreferrer">
+              <div class="reference-link-title">${escapeHtml(item.label)}</div>
+              <div class="reference-link-copy">${escapeHtml(item.description)}</div>
             </a>
           `)
           .join("")}
@@ -269,9 +289,9 @@ function fillSupplementBody() {
     : `<div class="supplement-empty">当前还没有这篇作品的注释，后续可以继续补充教材注释或通用注释。</div>`;
   document.getElementById("recitationBody").innerHTML = (article.recitationReferences || [])
     .map((item) => `
-      <a class="recitation-item" href="${item.url}" target="_blank" rel="noreferrer">
-        <div class="recitation-item-title">${item.label}</div>
-        <div class="recitation-item-copy">${item.description}</div>
+      <a class="recitation-item" href="${escapeHtml(safeExternalUrl(item.url))}" target="_blank" rel="noreferrer">
+        <div class="recitation-item-title">${escapeHtml(item.label)}</div>
+        <div class="recitation-item-copy">${escapeHtml(item.description)}</div>
       </a>
     `)
     .join("");
@@ -360,8 +380,8 @@ function buildPrintablePreview() {
   const authorWrap = document.createElement("div");
   authorWrap.className = "author-stack";
   authorWrap.innerHTML = `
-    <div class="author-pinyin">${article.authorPinyin.map((item) => `<span>${inlineSymbols.has(item) ? "" : item}</span>`).join("")}</div>
-    <div class="author-grid">${article.authorDisplay.map((item) => `<div class="author-cell">${item}</div>`).join("")}</div>
+    <div class="author-pinyin">${article.authorPinyin.map((item) => `<span>${inlineSymbols.has(item) ? "" : escapeHtml(item)}</span>`).join("")}</div>
+    <div class="author-grid">${article.authorDisplay.map((item) => `<div class="author-cell">${escapeHtml(item)}</div>`).join("")}</div>
   `;
 
   const articleCanvas = document.createElement("section");
@@ -381,7 +401,7 @@ function buildPrintablePreview() {
   if (state.showTranslation && article.translation.length) {
     const section = document.createElement("section");
     section.className = "supplement-card";
-    section.innerHTML = `<div class="section-kicker">译文</div><div class="supplement-body">${article.translation.map((item) => `<p>${item}</p>`).join("")}</div>`;
+    section.innerHTML = `<div class="section-kicker">译文</div><div class="supplement-body">${article.translation.map((item) => `<p>${escapeHtml(item)}</p>`).join("")}</div>`;
     sheet.appendChild(section);
   }
 
@@ -526,8 +546,8 @@ function renderPreviewSnapshot() {
   previewHeader.className = "preview-header";
   previewHeader.innerHTML = `
     <div class="preview-topline"></div>
-    <div class="preview-title">${state.article ? state.article.title : "古诗文排版预览"}</div>
-    <div class="preview-meta">${formatPreviewMeta(state.article)}</div>
+    <div class="preview-title">${escapeHtml(state.article ? state.article.title : "古诗文排版预览")}</div>
+    <div class="preview-meta">${escapeHtml(formatPreviewMeta(state.article))}</div>
   `;
 
   const previewBody = document.createElement("div");
@@ -660,7 +680,7 @@ function downloadPdf() {
     <html lang="zh-CN">
     <head>
       <meta charset="UTF-8" />
-      <title>${state.article ? state.article.title : "古文排版"} PDF 预览</title>
+      <title>${escapeHtml(state.article ? state.article.title : "古文排版")} PDF 预览</title>
       ${styles}
     </head>
     <body>
