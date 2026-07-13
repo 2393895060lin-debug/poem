@@ -14,6 +14,26 @@ SHIJING_URL = "https://raw.githubusercontent.com/chinese-poetry/chinese-poetry/m
 POETRY_SEARCH_URL = "https://poetry.palemoky.com/api/search"
 CACHE_MAX_AGE = timedelta(days=14)
 USER_AGENT = "Codex poem deploy/1.0"
+MAX_UPSTREAM_RESPONSE_BYTES = max(
+    1024,
+    int(os.getenv("POEM_MAX_UPSTREAM_RESPONSE_BYTES", str(2 * 1024 * 1024))),
+)
+ALLOWED_UPSTREAM_HOSTS = {"raw.githubusercontent.com", "poetry.palemoky.com"}
+
+
+def is_allowed_upstream_url(url: str) -> bool:
+    parsed = urllib.parse.urlparse(url)
+    return parsed.scheme == "https" and (parsed.hostname or "").lower() in ALLOWED_UPSTREAM_HOSTS
+
+
+class SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not is_allowed_upstream_url(newurl):
+            raise ValueError("上游服务跳转到了不受信任的地址。")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+SAFE_URL_OPENER = urllib.request.build_opener(SafeRedirectHandler())
 
 LOCAL_TEXT_LIBRARY = [
     {
@@ -129,9 +149,14 @@ def cache_dir() -> Path:
 
 
 def fetch_json(url: str) -> object:
+    if not is_allowed_upstream_url(url):
+        raise ValueError("不允许请求该上游地址。")
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(request, timeout=20) as response:
-        return json.loads(response.read().decode("utf-8"))
+    with SAFE_URL_OPENER.open(request, timeout=20) as response:
+        raw = response.read(MAX_UPSTREAM_RESPONSE_BYTES + 1)
+        if len(raw) > MAX_UPSTREAM_RESPONSE_BYTES:
+            raise ValueError("上游响应过大，已中止处理。")
+        return json.loads(raw.decode("utf-8"))
 
 
 def load_gaokao_dataset() -> list[dict]:

@@ -66,7 +66,13 @@ REQUEST_SOCKET_TIMEOUT_SECONDS = float(os.getenv("POEM_REQUEST_SOCKET_TIMEOUT_SE
 MAX_SERVER_WORKERS = max(1, int(os.getenv("POEM_MAX_SERVER_WORKERS", "32")))
 TRUST_PROXY_HEADERS = os.getenv("POEM_TRUST_PROXY_HEADERS", "").strip().lower() in {"1", "true", "yes"}
 FORCE_SECURE_COOKIES = os.getenv("POEM_FORCE_SECURE_COOKIES", "").strip().lower() in {"1", "true", "yes"}
-ALLOWED_UPSTREAM_HOSTS = {"www.gushiwen.cn", "www.guwendao.net", "m.guwendao.net"}
+ALLOWED_UPSTREAM_HOSTS = {
+    "www.gushiwen.cn",
+    "www.guwendao.net",
+    "m.guwendao.net",
+    "poetry.palemoky.com",
+    "raw.githubusercontent.com",
+}
 AUTHOR_FAME_SCORES = {
     "李白": 120,
     "杜甫": 118,
@@ -2350,7 +2356,7 @@ class AppHandler(SimpleHTTPRequestHandler):
             self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
             self.send_header("Pragma", "no-cache")
             self.send_header("Expires", "0")
-        self.send_header("Content-Security-Policy", "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; font-src 'self' data:; media-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'")
+        self.send_header("Content-Security-Policy", "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; script-src 'self'; connect-src 'self'; font-src 'self' data: https://fonts.gstatic.com; media-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Referrer-Policy", "same-origin")
@@ -2593,6 +2599,7 @@ class AppHandler(SimpleHTTPRequestHandler):
         except ValueError as exc:
             raise ValueError("Content-Length 不合法。") from exc
         if content_length < 0 or content_length > MAX_JSON_BODY_BYTES:
+            self.close_connection = True
             raise ValueError("请求体过大。")
         raw_body = self.rfile.read(content_length) if content_length > 0 else b""
         if not raw_body:
@@ -2614,6 +2621,7 @@ class AppHandler(SimpleHTTPRequestHandler):
     def redirect(self, location: str):
         self.send_response(HTTPStatus.FOUND)
         self.send_header("Location", location)
+        self.send_header("Content-Length", "0")
         self.end_headers()
 
 
