@@ -10,6 +10,7 @@ import secrets
 import sys
 import threading
 import time
+import warnings
 from collections import OrderedDict, deque
 from difflib import SequenceMatcher
 from functools import lru_cache
@@ -40,6 +41,7 @@ KNOWLEDGE_BASE_PATH = ROOT / "textbook_knowledge_base.json"
 GENERAL_ANNOTATION_BASE_PATH = ROOT / "general_annotation_base.json"
 TOP500_KNOWLEDGE_BASE_PATH = ROOT / "top500_knowledge_base.json"
 TEXTBOOK_SOURCE_REGISTRY_PATH = ROOT / "textbook_source_registry.json"
+PRONUNCIATION_OVERRIDES_PATH = ROOT / "pronunciation_overrides.json"
 
 EXTERNAL_TRANSLATION_SOURCES = {
     ("满江红", "岳飞"): "https://www.gushiwen.cn/gushiwen_1095efc612.aspx",
@@ -349,6 +351,75 @@ def load_json_object(path: Path, default):
     return raw if isinstance(raw, type(default)) else default
 
 
+def empty_pronunciation_overrides():
+    return {"global": {}, "works": {}}
+
+
+def pronunciation_config_warning(message: str, source: str = ""):
+    prefix = f"正文读音覆盖配置 {source}" if source else "正文读音覆盖配置"
+    warnings.warn(f"{prefix}：{message}", RuntimeWarning, stacklevel=2)
+
+
+def normalize_pronunciation_rule_map(raw, label: str, source: str = ""):
+    if not isinstance(raw, dict):
+        pronunciation_config_warning(f"{label} 必须是对象，已忽略。", source)
+        return {}
+
+    normalized = {}
+    for phrase, pronunciations in raw.items():
+        if not isinstance(phrase, str) or not phrase:
+            pronunciation_config_warning(f"{label} 中存在空词组或非字符串词组，已忽略。", source)
+            continue
+        if not isinstance(pronunciations, list):
+            pronunciation_config_warning(f"{label}.{phrase} 必须是拼音数组，已忽略。", source)
+            continue
+        if len(pronunciations) != len(phrase):
+            pronunciation_config_warning(
+                f"{label}.{phrase} 的拼音数量为 {len(pronunciations)}，应为 {len(phrase)}，已忽略。",
+                source,
+            )
+            continue
+        if not all(isinstance(item, str) and item.strip() for item in pronunciations):
+            pronunciation_config_warning(f"{label}.{phrase} 含空拼音或非字符串拼音，已忽略。", source)
+            continue
+        normalized[phrase] = [item.strip() for item in pronunciations]
+    return normalized
+
+
+def normalize_pronunciation_overrides(raw, source: str = ""):
+    if not isinstance(raw, dict):
+        pronunciation_config_warning("顶层必须是对象，已忽略全部规则。", source)
+        return empty_pronunciation_overrides()
+
+    global_rules = normalize_pronunciation_rule_map(raw.get("global", {}), "global", source)
+    raw_works = raw.get("works", {})
+    if not isinstance(raw_works, dict):
+        pronunciation_config_warning("works 必须是对象，已忽略全部作品级规则。", source)
+        raw_works = {}
+
+    work_rules = {}
+    for title, rules in raw_works.items():
+        if not isinstance(title, str) or not title.strip():
+            pronunciation_config_warning("works 中存在空标题或非字符串标题，已忽略。", source)
+            continue
+        normalized_rules = normalize_pronunciation_rule_map(rules, f"works.{title}", source)
+        if normalized_rules:
+            work_rules[title.strip()] = normalized_rules
+
+    return {"global": global_rules, "works": work_rules}
+
+
+def load_pronunciation_overrides(path: Path):
+    if not path.exists():
+        return empty_pronunciation_overrides()
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        pronunciation_config_warning(f"读取失败（{exc}），已忽略全部规则。", str(path))
+        return empty_pronunciation_overrides()
+    return normalize_pronunciation_overrides(raw, str(path))
+
+
 def write_json_file(path: Path, payload):
     path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = path.with_suffix(f"{path.suffix}.tmp")
@@ -360,6 +431,7 @@ TEXTBOOK_KNOWLEDGE_BASE = load_json_database(KNOWLEDGE_BASE_PATH, "教材知识�
 GENERAL_ANNOTATION_BASE = load_json_database(GENERAL_ANNOTATION_BASE_PATH, "补充注释库")
 TOP500_KNOWLEDGE_BASE = load_json_database(TOP500_KNOWLEDGE_BASE_PATH, "TOP500归档库")
 TEXTBOOK_SOURCE_REGISTRY = json.loads(TEXTBOOK_SOURCE_REGISTRY_PATH.read_text(encoding="utf-8")) if TEXTBOOK_SOURCE_REGISTRY_PATH.exists() else {"works": []}
+PRONUNCIATION_OVERRIDES = load_pronunciation_overrides(PRONUNCIATION_OVERRIDES_PATH)
 ensure_runtime_dirs()
 AUTO_SUPPLEMENT_CACHE = load_json_object(AUTO_SUPPLEMENT_CACHE_PATH, {"works": {}})
 AUTO_SUPPLEMENT_LOCK = threading.Lock()
@@ -1129,9 +1201,42 @@ def lookup_from_registry(title: str, author: str):
     return RegistryLookupResult(entry["title"], entry.get("author", ""), entry.get("dynasty", ""), content, "教材页抓取")
 
 
-def tokens_for_text(text: str):
+def apply_pronunciation_overrides(text: str, pronunciations: list[str], title: str = ""):
+    resolved = list(pronunciations)
+    work_rules = PRONUNCIATION_OVERRIDES.get("works", {}).get(title.strip(), {})
+    global_rules = PRONUNCIATION_OVERRIDES.get("global", {})
+    work_phrases = sorted(work_rules, key=len, reverse=True)
+    global_phrases = sorted(global_rules, key=len, reverse=True)
+
+    index = 0
+    while index < len(text):
+        matched_phrase = next((phrase for phrase in work_phrases if text.startswith(phrase, index)), None)
+        matched_rules = work_rules
+        if matched_phrase is None:
+            matched_phrase = next((phrase for phrase in global_phrases if text.startswith(phrase, index)), None)
+            matched_rules = global_rules
+        if matched_phrase is None:
+            index += 1
+            continue
+
+        replacement = matched_rules[matched_phrase]
+        resolved[index:index + len(matched_phrase)] = replacement
+        index += len(matched_phrase)
+
+    return resolved
+
+
+def tokens_for_text(text: str, title: str = ""):
     values = pinyin(text, style=Style.TONE, heteronym=False, errors=lambda raw: list(raw))
-    return [{"char": char, "pinyin": item[0] if item else char, "noteNumbers": []} for char, item in zip(text, values)]
+    pronunciations = [
+        values[index][0] if index < len(values) and values[index] else char
+        for index, char in enumerate(text)
+    ]
+    pronunciations = apply_pronunciation_overrides(text, pronunciations, title)
+    return [
+        {"char": char, "pinyin": pronunciations[index], "noteNumbers": []}
+        for index, char in enumerate(text)
+    ]
 
 
 def normalize_notes(notes):
@@ -1476,8 +1581,8 @@ def merge_note_buckets(note_buckets):
     return merged, groups
 
 
-def build_annotated_lines(content_lines, notes):
-    token_lines = [tokens_for_text(line) for line in content_lines]
+def build_annotated_lines(content_lines, notes, title: str = ""):
+    token_lines = [tokens_for_text(line, title) for line in content_lines]
     plain_lines = ["".join(unit["char"] for unit in line) for line in token_lines]
 
     sorted_notes = sorted(
@@ -2203,7 +2308,7 @@ def render_export_image_png(payload: dict, *, show_translation: bool, show_notes
 
 
 def build_payload(title: str, author: str = "", wait_for_enrichment: bool = False, force_refresh: bool = False, _sync_attempted: bool = False):
-    _, result = resolve_lookup_result(title, author)
+    resolved_title, result = resolve_lookup_result(title, author)
     supplements = SUPPLEMENTS.get(result.title, {})
     textbook_entry = database_entry_for(TEXTBOOK_KNOWLEDGE_BASE, result.title)
     general_entry = database_entry_for(GENERAL_ANNOTATION_BASE, result.title)
@@ -2261,7 +2366,7 @@ def build_payload(title: str, author: str = "", wait_for_enrichment: bool = Fals
             force_refresh=False,
             _sync_attempted=True,
         )
-    annotated_lines = build_annotated_lines(result.content, notes)
+    annotated_lines = build_annotated_lines(result.content, notes, resolved_title)
     translation_references = build_translation_references(result.title, result.author)
     recitation_references = build_recitation_references(result.title, result.author)
     enrichment = schedule_enrichment(
