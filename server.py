@@ -2308,7 +2308,7 @@ def render_export_image_png(payload: dict, *, show_translation: bool, show_notes
 
 
 def build_payload(title: str, author: str = "", wait_for_enrichment: bool = False, force_refresh: bool = False, _sync_attempted: bool = False):
-    _, result = resolve_lookup_result(title, author)
+    resolved_title, result = resolve_lookup_result(title, author)
     supplements = SUPPLEMENTS.get(result.title, {})
     textbook_entry = database_entry_for(TEXTBOOK_KNOWLEDGE_BASE, result.title)
     general_entry = database_entry_for(GENERAL_ANNOTATION_BASE, result.title)
@@ -2366,7 +2366,7 @@ def build_payload(title: str, author: str = "", wait_for_enrichment: bool = Fals
             force_refresh=False,
             _sync_attempted=True,
         )
-    annotated_lines = build_annotated_lines(result.content, notes, result.title)
+    annotated_lines = build_annotated_lines(result.content, notes, resolved_title)
     translation_references = build_translation_references(result.title, result.author)
     recitation_references = build_recitation_references(result.title, result.author)
     enrichment = schedule_enrichment(

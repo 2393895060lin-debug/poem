@@ -100,9 +100,9 @@ class PronunciationOverrideTests(unittest.TestCase):
         self.assertEqual(lines[0][text.index("洲")]["noteNumbers"], [7])
         self.assertEqual(lines[0][-1]["char"], "，")
 
-    def test_build_payload_contains_corrected_line_tokens(self):
+    def test_build_payload_uses_canonical_title_for_pronunciation_only(self):
         result = SimpleNamespace(
-            title="滕王阁序",
+            title="滕王阁序（节选）",
             author="王勃",
             dynasty="唐",
             content=["临帝子之长洲"],
@@ -120,6 +120,7 @@ class PronunciationOverrideTests(unittest.TestCase):
 
         line = payload["lines"][0]
         text = "".join(item["char"] for item in line)
+        self.assertEqual(payload["title"], "滕王阁序（节选）")
         self.assertEqual(text, "临帝子之长洲")
         self.assertEqual(line[text.index("长")]["pinyin"], "cháng")
 
